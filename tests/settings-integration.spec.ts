@@ -1,0 +1,460 @@
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
+import LlmRuntime from '@deepseek-ai/dsh-llm'
+import SettingsProvider from '@deepseek-ai/dsh-settings'
+import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
+import * as Qoder from '../src/index.ts'
+import { normalizeQoderModels } from '../src/qoder/catalog.ts'
+import { modelInfoOf } from '../src/upstream.ts'
+
+/**
+ * Host-settings integration for the assembled plugin: which namespaces get a
+ * served section, what fields each card owns, where writes land, and how the
+ * global variant's maximum-context preference survives restarts.
+ *
+ * WorkBuddy-era cases (device login, app-version telemetry, client identity,
+ * the per-product credential-domain realm check) have no Qoder counterpart and
+ * were dropped with the features they tested; the realm case is re-expressed
+ * as the legacy-credential-file refusal, which is what survives of its intent.
+ */
+
+class MemorySettings extends SettingsProvider {
+  readonly writable = true
+  private storedDocument: Record<string, unknown> = {}
+
+  protected load(): Promise<Record<string, unknown>> {
+    return Promise.resolve(structuredClone(this.storedDocument))
+  }
+
+  protected persist(ns: SettingsNamespace, section: Record<string, unknown>): Promise<void> {
+    this.storedDocument[ns] = structuredClone(section)
+    return Promise.resolve()
+  }
+}
+
+let context: Context | undefined
+let root: string | undefined
+
+/** A Qoder credential document as the card's save would have written it. */
+function credentialDocument(pat: string, region: 'china' | 'global'): string {
+  return JSON.stringify({ version: 2, pat, region, savedAt: Date.now() })
+}
+
+/** The PATs this spec signs in with; identities only ever as hashed keys. */
+const PAT_CN = 'pt-settings-cn-0000000000000000aa'
+const PAT_GLOBAL = 'pt-settings-global-000000000000bb'
+
+/** Isolate the plugin's file roots and silence any real environment PAT. */
+function stubEnvRoot(): void {
+  vi.stubEnv('DSH_HOME', root!)
+  vi.stubEnv(Qoder.QODER_DATA_DIR_ENV, root!)
+  vi.stubEnv('HOME', root!)
+  vi.stubEnv('USERPROFILE', root!)
+  vi.stubEnv('QODER_PERSONAL_ACCESS_TOKEN', '')
+  vi.stubEnv('QODER_CN_PERSONAL_ACCESS_TOKEN', '')
+}
+
+afterEach(async () => {
+  await context?.fiber.dispose()
+  context = undefined
+  if (root !== undefined) await rm(root, { recursive: true, force: true })
+  root = undefined
+  vi.restoreAllMocks()
+  vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
+})
+
+/**
+ * A live catalog whose one model declares two context windows (300k default,
+ * 1M maximum): the only shape that makes the maximum-context preference
+ * observable end to end. Everything upstream answers this roster.
+ */
+function bigContextEnvelope(): string {
+  return JSON.stringify({
+    assistant: [{
+      key: 'big-context',
+      enable: true,
+      display_name: 'Big Context',
+      max_input_tokens: 1_000_000,
+      max_output_tokens: 1_000,
+      is_vl: true,
+      price_factor: 1,
+      context_config: {
+        small: { token_count: 300_000, is_default: true },
+        large: { token_count: 1_000_000 },
+      },
+    }],
+  })
+}
+
+function liveCatalogFetch(): ReturnType<typeof vi.fn> {
+  return vi.fn(async (url: string | URL) => {
+    const href = String(url)
+    if (href.includes('/api/v1/jobToken/exchange')) {
+      return new Response(JSON.stringify({ token: 'jt-settings', expires_in: 86_400_000 }), { status: 200 })
+    }
+    if (href.includes('/api/v1/userinfo')) {
+      return new Response(JSON.stringify({ id: 'user-settings', email: 's@example.invalid', name: 's' }), { status: 200 })
+    }
+    if (href.includes('/algo/api/v2/model/list')) {
+      return new Response(bigContextEnvelope(), { status: 200 })
+    }
+    return new Response('{}', { status: 404 })
+  })
+}
+
+describe('Qoder Host settings integration', () => {
+  it('restores the saved maximum-window preference after restarting and can disable it', async () => {
+    root = await mkdtemp(join(tmpdir(), 'qoder-context-restart-'))
+    const settingsFile = join(root, 'settings.json')
+    const globalAuthPath = join(root, Qoder.GLOBAL_VARIANT.ownFilename)
+    await writeFile(settingsFile, '{}')
+    await writeFile(globalAuthPath, credentialDocument(PAT_GLOBAL, 'global'))
+    stubEnvRoot()
+    vi.stubEnv('DSH_QODER_POLL_MS', '100')
+    vi.stubGlobal('fetch', liveCatalogFetch())
+    class FileSettings extends SettingsProvider {
+      readonly writable = true
+      protected async load(): Promise<Record<string, unknown>> {
+        return JSON.parse(await readFile(settingsFile, 'utf8'))
+      }
+
+      protected async persist(ns: SettingsNamespace, section: Record<string, unknown>): Promise<void> {
+        const document = await this.load()
+        document[ns] = section
+        await writeFile(settingsFile, JSON.stringify(document))
+      }
+    }
+    const boot = async (): Promise<Context> => {
+      const ctx = new Context()
+      context = ctx
+      await ctx.plugin(LlmRuntime)
+      await ctx.plugin(FileSettings)
+      await ctx.plugin(Qoder, {})
+      // Wait for the LIVE roster, not merely a visible group: the fallback
+      // names no `big-context`, so only this proves the fetch landed.
+      await vi.waitFor(async () => {
+        expect((await ctx.llm.listModels('qoder-global')).map(model => model.id)).toContain('big-context')
+      }, { timeout: 15_000 })
+      return ctx
+    }
+    let ctx = await boot()
+    // Fresh profile, setting never touched: the default is on, so the model
+    // resolves at its largest declared window before any update is written.
+    expect((await ctx.llm.resolveModelInfo('qoder-global', 'big-context')).context?.contextWindow).toBe(1_000_000)
+    await ctx.fiber.dispose()
+    ctx = await boot()
+    // Still on across a restart with nothing stored (schema default, not state).
+    expect((await ctx.llm.resolveModelInfo('qoder-global', 'big-context')).context?.contextWindow).toBe(1_000_000)
+    // An explicit opt-out must survive restarts: the flipped default may not
+    // resurrect the preference the user turned off.
+    await ctx.settings.update(Qoder.QODER_GLOBAL_SETTINGS_NS, { useMaximumContextWindow: false })
+    await vi.waitFor(async () => {
+      expect((await ctx.llm.resolveModelInfo('qoder-global', 'big-context')).context?.contextWindow).toBe(300_000)
+    }, { timeout: 10_000 })
+    await ctx.fiber.dispose()
+    ctx = await boot()
+    expect(ctx.settings.get(Qoder.QODER_GLOBAL_SETTINGS_NS)).toMatchObject({ useMaximumContextWindow: false })
+    expect((await ctx.llm.resolveModelInfo('qoder-global', 'big-context')).context?.contextWindow).toBe(300_000)
+  })
+
+  it('exposes the provider directory entry, the settings section, and the fallback model list', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-qoder-connect-settings-'))
+    stubEnvRoot()
+    // This case asserts the fallback roster, which is served only to a
+    // signed-in variant. Pinning a credential of its own keeps that independent
+    // of anything else on this machine: the store reads the plugin's own file
+    // under the data dir, and without one the group stays hidden (empty model
+    // list) rather than serving the roster.
+    await writeFile(join(root, Qoder.CHINA_VARIANT.ownFilename), credentialDocument(PAT_CN, 'china'))
+    // Signing in would otherwise make this case perform a real discovery
+    // request; these tests must not touch the network, and the roster asserted
+    // below is the compiled-in fallback, so the fetch fails instead.
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline in tests') }))
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    await ctx.plugin(Qoder, {})
+
+    // Registration rides on the loopback shim's listening event.
+    await vi.waitFor(async () => {
+      expect((await ctx.llm.listModels('qoder')).length).toBeGreaterThan(0)
+    }, { timeout: 15_000 })
+    expect(ctx.llm.listConfigurableProviders()).toContainEqual({
+      provider: 'qoder',
+      displayName: 'Qoder',
+      settingsNs: 'qoder',
+      settingsPath: [],
+      declared: false,
+    })
+
+    // The section is what the Models settings page joins on to render a card.
+    const descriptor = ctx.settings.describe().find(entry => entry.ns === Qoder.QODER_SETTINGS_NS)
+    expect(descriptor).toBeDefined()
+
+    const models = await ctx.llm.listModels('qoder')
+    // The fallback roster mirrors the transport's built-in Qoder pool.
+    expect(models.map(model => model.id)).toEqual(expect.arrayContaining(['cmodel', 'auto', 'ultimate', 'performance', 'efficient', 'lite']))
+
+    // Billing display: the fallback rows declare no rate, so their names carry
+    // no `x<n>` suffix — the rate-unknown case must not render a fake one.
+    const byId = new Map(models.map(model => [model.id, model]))
+    expect(byId.get('auto')?.name).toBe('Qoder Auto')
+    expect(byId.get('auto')?.description).toBeUndefined()
+
+    // Thinking controls are declaration-driven: no fallback row declares a
+    // reasoning section, so none exposes an effort picker.
+    const autoResolved = await ctx.llm.resolveModelInfo('qoder', 'auto')
+    expect(autoResolved.reasoning).toBeUndefined()
+
+    // Image modalities follow the per-model catalog flag (fallback list here).
+    const modalities = new Map(models.map(model => [model.id, model.inputModalities]))
+    expect(modalities.get('auto')).toContain('image')
+    expect(modalities.get('lite')).toEqual(['text'])
+
+    // A settings write validates against the schema and persists. The China
+    // section owns one field — `probeConsent` — so that is the write to make,
+    // and the stored value is read back both through the live descriptor and
+    // through the section's own document.
+    await ctx.settings.update(Qoder.QODER_SETTINGS_NS, { probeConsent: true })
+    const updated = ctx.settings.describe().find(entry => entry.ns === Qoder.QODER_SETTINGS_NS)
+    expect((updated?.value as Record<string, unknown>)['probeConsent']).toBe(true)
+    expect(ctx.settings.get(Qoder.QODER_SETTINGS_NS)).toMatchObject({ probeConsent: true })
+  })
+
+  /**
+   * Both providers register from one plugin, unconditionally, and the four
+   * credential combinations are expressed through catalog visibility rather
+   * than through registration. That is what lets a sign-in that happens while
+   * DSH is already running surface without a restart.
+   */
+  it('registers both variants and keeps each variant identity separate', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-qoder-connect-dual-'))
+    stubEnvRoot()
+    // Shorten the credential sweep: a group appears only once the sweep has
+    // adopted the credential it finds in the temporary home.
+    vi.stubEnv('DSH_QODER_POLL_MS', '100')
+    // One real-shaped credential per product, each in the file its own variant
+    // owns under the plugin data dir; both arms answer with the live roster.
+    await writeFile(join(root, Qoder.CHINA_VARIANT.ownFilename), credentialDocument(PAT_CN, 'china'))
+    await writeFile(join(root, Qoder.GLOBAL_VARIANT.ownFilename), credentialDocument(PAT_GLOBAL, 'global'))
+    vi.stubGlobal('fetch', liveCatalogFetch())
+
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    await ctx.plugin(Qoder, {})
+
+    await vi.waitFor(async () => {
+      // Both arms must be serving the LIVE roster before the per-variant
+      // window assertions below: the fallback would pass a bare non-empty check.
+      expect((await ctx.llm.listModels('qoder')).map(model => model.id)).toContain('big-context')
+      expect((await ctx.llm.listModels('qoder-global')).map(model => model.id)).toContain('big-context')
+    }, { timeout: 15_000 })
+    expect(ctx.llm.listProviders().map(provider => provider.id)).toEqual(
+      expect.arrayContaining(['qoder', 'qoder-global']),
+    )
+
+    // Each provider carries its own display name, which is the model group
+    // heading the picker renders — and its OWN settings namespace: the Models
+    // page resolves `settingsNs` against served sections, so a shared ns would
+    // render both providers onto one card.
+    expect(ctx.llm.listConfigurableProviders()).toEqual(expect.arrayContaining([
+      { provider: 'qoder', displayName: 'Qoder', settingsNs: 'qoder', settingsPath: [], declared: false },
+      { provider: 'qoder-global', displayName: 'Qoder Global', settingsNs: 'qoder-global', settingsPath: [], declared: false },
+    ]))
+
+    // THE DISPATCH CONTRACT. The Plugins tab renders a card by
+    // `renderSlot('settings.plugin.item', {}, { entryKey: ns })` for each
+    // namespace the Host serves, and skips an entry whose key names no served
+    // namespace — the tab builds its list from sections, never from the slot's
+    // registrations. A card whose variant id is not a served ns therefore
+    // registers but never renders, which is exactly the bug this pins: every
+    // variant id must be an installed section's namespace.
+    const served = new Set(ctx.settings.describe().map(entry => entry.ns))
+    for (const variant of Qoder.QODER_VARIANTS) {
+      expect(served, `card key "${variant.id}" must be a served settings namespace`).toContain(variant.id)
+    }
+    expect(served).toContain(Qoder.QODER_QUOTA_SETTINGS_NS)
+
+    // Each section owns only its own fields, so one card's form cannot edit the
+    // other's preference. `describe()` reports the schema as schemastery's ref
+    // graph; the root object's `dict` is the field map.
+    const fieldsOf = (ns: string): string[] => {
+      const descriptor = ctx.settings.describe().find(entry => entry.ns === ns)
+      const root = (descriptor?.schema as { refs?: Record<string, { dict?: Record<string, unknown> }>, uid?: string } | undefined)?.refs?.[String((descriptor?.schema as { uid?: number } | undefined)?.uid)]
+      return Object.keys(root?.dict ?? {})
+    }
+    // No credential-path field survives on either card: a credential is a PAT
+    // pasted into the card and stored by the plugin, so there is nothing left
+    // to point at a file.
+    expect(fieldsOf('qoder')).toEqual(['probeConsent', 'useMaximumContextWindowCN', 'modelContextWindowsCN'])
+    expect(fieldsOf('qoder-global')).toEqual(['useMaximumContextWindow', 'modelContextWindows'])
+    expect(fieldsOf('qoder-quota')).toEqual(['sidebarQuotaCN', 'sidebarQuotaGlobal', 'quotaPollMs'])
+
+    // A write through one section must reach only THAT variant. The same live
+    // roster is served to both arms, and each now carries its own maximum-window
+    // preference, so the two toggles are independent observables: flipping the
+    // GLOBAL one must move only the global variant's window, and the China
+    // answer must stay where its own toggle put it.
+    await vi.waitFor(async () => {
+      expect((await ctx.llm.resolveModelInfo('qoder-global', 'big-context')).context?.contextWindow).toBe(1_000_000)
+    }, { timeout: 10_000 })
+    expect((await ctx.llm.resolveModelInfo('qoder', 'big-context')).context?.contextWindow).toBe(1_000_000)
+    await ctx.settings.update(Qoder.QODER_GLOBAL_SETTINGS_NS, { useMaximumContextWindow: false })
+    await vi.waitFor(async () => {
+      expect((await ctx.llm.resolveModelInfo('qoder-global', 'big-context')).context?.contextWindow).toBe(300_000)
+    }, { timeout: 10_000 })
+    // The China toggle is untouched: still serving the maximum.
+    expect((await ctx.llm.resolveModelInfo('qoder', 'big-context')).context?.contextWindow).toBe(1_000_000)
+    await ctx.settings.update(Qoder.QODER_SETTINGS_NS, { useMaximumContextWindowCN: false })
+    await vi.waitFor(async () => {
+      expect((await ctx.llm.resolveModelInfo('qoder', 'big-context')).context?.contextWindow).toBe(300_000)
+    }, { timeout: 10_000 })
+  })
+
+  /**
+   * With no credential present, a variant exposes nothing. This is the
+   * deliberate behaviour the plan calls out: a signed-out provider must not
+   * publish fallback models that could only fail on the first message.
+   */
+  it('hides a variant with no usable credential while still registering it', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-qoder-connect-empty-'))
+    // The temporary data dir is empty: neither variant's own credential file
+    // exists and no environment PAT is set, which is what "nobody has signed
+    // in" now means.
+    stubEnvRoot()
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    await ctx.plugin(Qoder, {})
+
+    await vi.waitFor(() => {
+      expect(ctx.llm.listProviders().map(provider => provider.id)).toContain('qoder')
+    })
+    await vi.waitFor(async () => {
+      expect(await ctx.llm.listModels('qoder')).toEqual([])
+    })
+    expect(await ctx.llm.listModels('qoder-global')).toEqual([])
+
+    // The provider directory entry survives: the group is hidden by having no
+    // models, not by unregistering, so a later sign-in needs no restart.
+    expect(ctx.llm.listConfigurableProviders().map(entry => entry.provider))
+      .toEqual(expect.arrayContaining(['qoder', 'qoder-global']))
+    // And the settings card is still there to explain how to sign in.
+    expect(ctx.settings.describe().find(entry => entry.ns === Qoder.QODER_SETTINGS_NS)).toBeDefined()
+  })
+
+  /**
+   * The environment PAT fallback from the naming contract: a file remains the
+   * authority, and without one the arm's own env variable signs it in.
+   */
+  it('signs in a variant from its environment PAT when no file exists', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-qoder-connect-env-'))
+    stubEnvRoot()
+    vi.stubEnv('QODER_PERSONAL_ACCESS_TOKEN', 'pt-from-environment')
+    vi.stubEnv('DSH_QODER_POLL_MS', '100')
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline in tests') }))
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    await ctx.plugin(Qoder, {})
+
+    await vi.waitFor(async () => {
+      expect((await ctx.llm.listModels('qoder-global')).length).toBeGreaterThan(0)
+    }, { timeout: 15_000 })
+    // The China arm reads only its own variable: one env token signs in one
+    // variant, and the other stays hidden.
+    expect(await ctx.llm.listModels('qoder')).toEqual([])
+  })
+
+  /**
+   * A stale WorkBuddy-era credential file is refused, and the refusal is what
+   * the card would show. Silently treating it as "signed out" would send the
+   * user to re-authenticate without naming the actual fix; at plugin level the
+   * observable contract is that such a file never reveals models.
+   */
+  it('refuses a legacy credential file instead of treating it as a PAT', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-qoder-connect-legacy-'))
+    stubEnvRoot()
+    vi.stubEnv('DSH_QODER_POLL_MS', '100')
+    // The WorkBuddy-era shape: an accessToken document where a Qoder PAT
+    // belongs. The store must call it invalid, not migrate or trust it.
+    await writeFile(join(root, Qoder.CHINA_VARIANT.ownFilename), JSON.stringify({
+      auth: { accessToken: 'at', refreshToken: 'rt', expiresAt: Date.now() + 3_600_000, domain: 'copilot.tencent.com' },
+      account: { uid: 'uid-1', nickname: 'nick', enterpriseId: 'ent-1' },
+    }))
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline in tests') }))
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    await ctx.plugin(Qoder, {})
+
+    await vi.waitFor(() => {
+      expect(ctx.llm.listProviders().map(provider => provider.id)).toContain('qoder')
+    })
+    // Refused, so the group stays hidden rather than serving a roster the stale
+    // token cannot actually reach. Give the sweep time to have adopted a valid
+    // credential had it accepted this one.
+    await new Promise(resolve => setTimeout(resolve, 500))
+    expect(await ctx.llm.listModels('qoder')).toEqual([])
+    expect(await ctx.llm.listModels('qoder-global')).toEqual([])
+  })
+
+  /**
+   * The quota card's shared section: its namespace is served, its fields are
+   * the two sidebar toggles plus one rate limit honoured at the schema edge.
+   */
+  it('validates and persists the quota section', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-qoder-connect-quota-'))
+    stubEnvRoot()
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline in tests') }))
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    await ctx.plugin(Qoder, {})
+    await vi.waitFor(() => {
+      expect(ctx.llm.listProviders().map(provider => provider.id)).toContain('qoder')
+    })
+
+    await ctx.settings.update(Qoder.QODER_QUOTA_SETTINGS_NS, { sidebarQuotaCN: true })
+    expect(ctx.settings.get(Qoder.QODER_QUOTA_SETTINGS_NS)).toMatchObject({ sidebarQuotaCN: true })
+
+    // The poll floor is enforced by the schema itself, not by the card. The
+    // schema instance is callable: it validates and applies defaults.
+    expect(Qoder.QUOTA_POLL_DEFAULT_MS).toBe(300_000)
+    expect(Qoder.QUOTA_POLL_MIN_MS).toBe(60_000)
+    expect(Qoder.Config({})).toMatchObject({ quotaPollMs: Qoder.QUOTA_POLL_DEFAULT_MS })
+    expect(() => Qoder.Config({ quotaPollMs: 1_000 })).toThrow()
+    expect(Qoder.Config({ quotaPollMs: Qoder.QUOTA_POLL_MIN_MS })).toMatchObject({ quotaPollMs: Qoder.QUOTA_POLL_MIN_MS })
+  })
+
+  it('defaults its model rows to the live-catalog shape the stores fingerprint', async () => {
+    // Cross-check the fixture translation used by the probe specs: the same
+    // envelope produces a QoderModelInfo with the fallback's own defaults when
+    // the upstream declares nothing.
+    const row = modelInfoOf(normalizeQoderModels(JSON.parse(bigContextEnvelope())).at(0)!)
+    expect(row.contextWindow).toBe(300_000)
+    expect(row.defaultContextWindow).toBe(300_000)
+    expect(row.supportedContextWindows).toEqual([300_000, 1_000_000])
+    expect(row.billing).toEqual({ credits: 'x1', free: false })
+    expect(row.reasoning).toBeUndefined()
+    // The roster lives where the plan says it does, one file per variant.
+    root = await mkdtemp(join(tmpdir(), 'dsh-qoder-connect-ident-'))
+    await mkdir(join(root, 'state'), { recursive: true })
+    stubEnvRoot()
+    expect(Qoder.qoderCatalogPath(Qoder.GLOBAL_VARIANT.catalogFilename))
+      .toBe(join(root, 'state', '.qoder-global-catalog.json'))
+    expect(Qoder.qoderProbePath(Qoder.CHINA_VARIANT.probeFilename))
+      .toBe(join(root, 'state', '.qoder-probe.json'))
+  })
+})
