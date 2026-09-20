@@ -595,6 +595,22 @@ function probeSection(runtime: VariantRuntime, consent: boolean): QoderWebProbeS
 }
 
 /**
+ * Run a detached promise without letting its failure kill the host.
+ *
+ * Node terminates the whole process on an unhandled rejection (exit code 1),
+ * which the desktop shell reports as the backend having "exited unexpectedly"
+ * — so a failing heartbeat write, loopback close, or background sweep in this
+ * plugin would take the entire Harness down with it. Every fire-and-forget
+ * call therefore carries a handler; a failure is a diagnostic, never a reason
+ * for the host to die.
+ */
+function detach(ctx: Context, work: Promise<unknown>, what: string): void {
+  void work.catch((error: unknown) => {
+    ctx.logger.warn(`dsh-qoder-connect: ${what} failed`, error)
+  })
+}
+
+/**
  * Start one variant: its loopback endpoint, provider registration, and
  * configuration-card wiring.
  *
@@ -662,20 +678,20 @@ async function startVariant(ctx: Context, runtime: VariantRuntime): Promise<bool
       ctx.effect(() => () => {
         releaseAdapter?.()
         releaseDirectory?.()
-        void shim.close()
+        detach(ctx, shim.close(), 'loopback endpoint close')
       })
     } catch {
       // The plugin was disposed during registration; release immediately — the
       // plugin-level disposer already closed every shim.
       releaseAdapter?.()
       releaseDirectory?.()
-      void shim.close()
+      detach(ctx, shim.close(), 'loopback endpoint close')
     }
     runtime.registered = true
     return true
   } catch (error: unknown) {
     ctx.logger.error(`dsh-qoder-connect: ${variant.displayName} provider registration failed`, error)
-    void shim.close()
+    detach(ctx, shim.close(), 'loopback endpoint close')
     return false
   }
 }
@@ -979,7 +995,7 @@ export function apply(ctx: Context, config: Config): void {
     stopped = true
     for (const timer of timers) clearInterval(timer)
     timers.length = 0
-    void clearHostHeartbeat()
+    detach(ctx, clearHostHeartbeat(), 'host heartbeat cleanup')
   })
 
   /**
@@ -1058,13 +1074,23 @@ export function apply(ctx: Context, config: Config): void {
       runtime.catalogError = undefined
       // Remember it for this account, so a restart — or a later fetch that
       // fails — can serve what this account was actually shown rather than the
-      // snapshot compiled into the plugin.
+      // snapshot compiled into the plugin. A failure to persist is reported and
+      // swallowed: the live catalog is already serving, and `fetchCatalog`
+      // promises its callers that it never rejects (an escaped rejection from a
+      // background sweep would terminate the host).
       if (lastIdentities.get(runtime.variant.id) === identity) {
-        runtime.savedCatalogs.set(identity, {
-          source: runtime.client.lastCatalog?.source ?? 'unknown',
-          fetchedAtMs: runtime.client.lastCatalog?.fetchedAtMs ?? Date.now(),
-          models: [...models],
-        })
+        try {
+          runtime.savedCatalogs.set(identity, {
+            source: runtime.client.lastCatalog?.source ?? 'unknown',
+            fetchedAtMs: runtime.client.lastCatalog?.fetchedAtMs ?? Date.now(),
+            models: [...models],
+          })
+        } catch (error: unknown) {
+          ctx.logger.warn(
+            `dsh-qoder-connect: ${runtime.variant.displayName} catalog could not be saved for this account`,
+            error,
+          )
+        }
       }
       runtime.invalidate()
     })().finally(() => {
@@ -1127,18 +1153,25 @@ export function apply(ctx: Context, config: Config): void {
     for (const runtime of runtimes) await syncVariant(runtime)
   }
 
-  void Promise.all(runtimes.map(async runtime => startVariant(ctx, runtime))).then(() => {
+  /**
+   * Start both variants, then begin the credential sweep.
+   *
+   * The chain carries its own failure handler: without one, a rejection here
+   * would be an unhandled rejection — which Node turns into process
+   * termination, taking the whole Harness down over one plugin's startup.
+   */
+  detach(ctx, Promise.all(runtimes.map(async runtime => startVariant(ctx, runtime))).then(() => {
     if (stopped) return
     // The host bundle is live: write a heartbeat so the status CLI can report
     // host health without a browser. Cleared on disposal; a stale heartbeat
     // after a crash is detected by PID in the reader. Written when at least one
     // variant registered, since that is what "the host bundle serves models"
     // means for this plugin.
-    if (runtimes.some(runtime => runtime.registered)) void writeHostHeartbeat()
+    if (runtimes.some(runtime => runtime.registered)) detach(ctx, writeHostHeartbeat(), 'host heartbeat write')
 
-    void syncAll()
-    const timer = setInterval(() => { void syncAll() }, credentialPollMs())
+    detach(ctx, syncAll(), 'credential sweep')
+    const timer = setInterval(() => { detach(ctx, syncAll(), 'credential sweep') }, credentialPollMs())
     timer.unref?.()
     timers.push(timer)
-  })
+  }), 'variant startup')
 }

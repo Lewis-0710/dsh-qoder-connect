@@ -123,7 +123,19 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
   }
 
   const server: Server = createServer((req, res) => {
-    void handle(req, res)
+    // `handle` contains its own failures, but the attempt is wrapped once more:
+    // an escaped rejection here is an unhandled rejection, which Node turns
+    // into process termination — one refused local request must never be able
+    // to take the whole Harness down.
+    void handle(req, res).catch((error: unknown) => {
+      logger?.warn('dsh-qoder-connect: loopback request failed', error)
+      try {
+        if (!res.headersSent) writeOpenAIError(res, 500, 'internal', 'loopback request failed')
+        else res.end()
+      } catch {
+        // The socket is already gone; nothing left to report to.
+      }
+    })
   })
 
   const ready = new Promise<void>((resolve, reject) => {

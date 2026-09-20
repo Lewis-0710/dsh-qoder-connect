@@ -23,3 +23,71 @@ test('qoderEncodeBody handles UTF-8 characters correctly', () => {
   const encoded = qoderEncodeBody(input)
   assert.ok(encoded.length > 0)
 })
+
+/**
+ * The shipped byte-table form must stay byte-for-byte identical to the
+ * character-loop reference it replaced: the encoding is part of the wire
+ * contract, and a mismatch would be rejected upstream rather than reported
+ * anywhere useful. The reference is the algorithm as first ported from
+ * qodercli.
+ */
+function referenceEncode(plaintext: string | Buffer): string {
+  const stdAlphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  const customAlphabet = '_doRTgHZBKcGVjlvpC,@aFSx#DPuNJme&i*MzLOEn)sUrthbf%Y^w.(kIQyXqWA!'
+  const std = Buffer.isBuffer(plaintext) ? plaintext.toString('base64') : Buffer.from(plaintext).toString('base64')
+  const n = std.length
+  const a = Math.floor(n / 3)
+  const rearranged = std.slice(n - a) + std.slice(a, n - a) + std.slice(0, a)
+  let out = ''
+  for (let index = 0; index < n; index++) {
+    const character = rearranged[index]
+    if (character === undefined) continue
+    if (character === '=') out += '$'
+    else {
+      const position = stdAlphabet.indexOf(character)
+      out += position >= 0 ? customAlphabet[position] : character
+    }
+  }
+  return out
+}
+
+test('qoderEncodeBody matches the character-loop reference on every length class', () => {
+  // Lengths around the 3-way split boundaries, plus 0..40 for good measure: the
+  // algorithm's `Math.floor(n/3)` re-arrangement behaves differently at each
+  // residue, so a single sample would not prove equivalence.
+  const cases: string[] = []
+  for (let length = 0; length <= 40; length++) cases.push('x'.repeat(length))
+  cases.push(
+    '{"messages":[{"role":"user","content":"你好，世界 🌍"}]}',
+    JSON.stringify({ filler: 'A'.repeat(10_000) }),
+    JSON.stringify({ filler: '中'.repeat(5_000) }),
+    'a',
+    'ab',
+    'abc',
+    'abcd',
+    '',
+  )
+  for (const input of cases) {
+    assert.equal(
+      qoderEncodeBody(input),
+      referenceEncode(input),
+      `mismatch for input of length ${input.length}`,
+    )
+    assert.equal(
+      qoderEncodeBody(Buffer.from(input, 'utf8')),
+      referenceEncode(Buffer.from(input, 'utf8')),
+      `buffer mismatch for input of length ${input.length}`,
+    )
+  }
+})
+
+test('qoderEncodeBody stays cheap on a large body (main-thread budget)', () => {
+  // A 1 MB body is an ordinary large-context request; the character loop took
+  // ~800 ms of blocked event loop on it, the table form is a few milliseconds.
+  const body = JSON.stringify({ filler: '中'.repeat(500_000) })
+  const started = performance.now()
+  const encoded = qoderEncodeBody(body)
+  const elapsed = performance.now() - started
+  assert.equal(encoded, referenceEncode(body))
+  assert.ok(elapsed < 250, `encoding a ${body.length}-char body took ${Math.round(elapsed)}ms`)
+})
