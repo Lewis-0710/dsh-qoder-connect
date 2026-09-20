@@ -45,6 +45,22 @@ export function qoderRequestId(headers?: Pick<Headers, 'get'>): ReturnType<typeo
   return normalized ? ProviderRequestId(normalized) : undefined
 }
 
+/**
+ * Whether this failure is an upstream authorization rejection worth one
+ * re-auth retry.
+ *
+ * The job token the transport signs requests with is cached in memory; an
+ * upstream that invalidates it mid-lifetime (gateway rotation or a fault
+ * window) answers HTTP 401/403 before any payload is produced. That state is
+ * distinguishable from a genuinely revoked PAT only by trying a fresh
+ * exchange, so callers clear their credential cache and retry once before
+ * reporting `AUTH` to the user.
+ */
+export function isQoderAuthRejection(error: unknown): error is LlmError {
+  return error instanceof LlmError
+    && (error.code === 'AUTH' || error.failure.status === 401 || error.failure.status === 403)
+}
+
 export function retryAfterMs(value: string | null, nowMs = Date.now()): number | undefined {
   const normalized = value?.trim()
   if (!normalized) return undefined

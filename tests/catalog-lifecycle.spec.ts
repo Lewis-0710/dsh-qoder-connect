@@ -463,6 +463,63 @@ describe('catalog lifecycle', () => {
       expect((await ctx.llm.listModels('qoder')).map(model => model.id)).toEqual(['acct-b-model'])
     }, { timeout: 10_000 })
   }, 45_000)
+
+  /**
+   * Saving a PAT is the first-run path: until the catalog lands, the card can
+   * only render the built-in roster. The save answer must therefore not arrive
+   * before the fetch it triggers — the card re-reads the status the moment that
+   * answer lands, and returning early left the user looking at the fallback
+   * list until a manual refresh or a later poll.
+   */
+  it('answers a PAT save only after the live catalog the card will read is in place', async () => {
+    await useRoot()
+    vi.stubEnv('DSH_QODER_POLL_MS', '100')
+    const upstream = qoderFetch({
+      fail: () => false,
+      hangListFor: () => undefined,
+      rosterFor: () => ({ id: 'fresh-model', name: 'Fresh Model' }),
+      noteList: () => {},
+    })
+    // A deliberately slow discovery call: without it the stub answers so fast
+    // that a save returning before its fetch still looks correct, because the
+    // fire-and-forget fetch lands during the HTTP round trip. The delay is what
+    // makes "the answer waited for the catalog" observable rather than timing
+    // luck.
+    vi.stubGlobal('fetch', async (url: string | URL, init?: RequestInit) => {
+      if (String(url).includes('/algo/api/v2/model/list')) {
+        await new Promise(resolve => setTimeout(resolve, 400))
+      }
+      return await upstream(url, init)
+    })
+
+    // No credential file: the card starts on the built-in roster, signed out.
+    const ctx = await boot()
+    const routes = FakeWebServer.current!.routes
+    const server = await serve(routes)
+    const get = async (path: string) => JSON.parse((await (await fetch(`http://127.0.0.1:${server.port}${path}`, { headers: { host: `127.0.0.1:${server.port}` } })).text()))
+
+    const signedOut = await get('/plugins/dsh-qoder-connect/status')
+    expect(signedOut.status).toBe('signed-out')
+    const authKey = signedOut.authKey as string
+
+    // Sign in through the real route, exactly as the card's Save button does.
+    const saved = await fetch(`http://127.0.0.1:${server.port}/plugins/dsh-qoder-connect/auth`, {
+      method: 'POST',
+      headers: {
+        host: `127.0.0.1:${server.port}`,
+        'content-type': 'application/json',
+        'x-qoder-auth-key': authKey,
+      },
+      body: JSON.stringify({ action: 'save-pat', pat: PAT_A }),
+    })
+    expect(await saved.json()).toMatchObject({ ok: true })
+
+    // No waiting, no polling: the very next read must already be the live list.
+    const afterSave = await get('/plugins/dsh-qoder-connect/status')
+    expect(afterSave.catalog.source).toBe('live')
+    expect(afterSave.models.map((model: { id: string }) => model.id)).toEqual(['fresh-model'])
+    expect((await ctx.llm.listModels('qoder')).map(model => model.id)).toEqual(['fresh-model'])
+  }, 45_000)
 })
 
 /**

@@ -79,8 +79,8 @@ Swap the `--profile` value for the profile you use (`web` / `desktop` / `tui`, e
 
 ### Mint a PAT
 
-- **Qoder (China)**: sign in at qoder.com.cn → account settings → Personal Access Token.
-- **Qoder Global**: sign in at qoder.com → account settings → Personal Access Token.
+- **Qoder (China)**: sign in at qoder.com.cn → account settings → Personal Access Token, then copy it. [Open the page](https://qoder.cn/account/integrations)
+- **Qoder Global**: sign in at qoder.com → account settings → Personal Access Token, then copy it. [Open the page](https://qoder.com/account/integrations)
 
 (The card repeats the same guidance: *“Generate a PAT in your qoder.com account settings (Account → Personal Access Token), then paste it here.”*)
 

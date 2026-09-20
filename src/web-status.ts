@@ -48,6 +48,12 @@ export interface QoderStatusRouteOptions {
   /** Card preference selecting larger declared context windows. */
   useMaximumContextWindow?: () => boolean
   /**
+   * When the self-heal last auto-refreshed the job token, epoch ms; absent
+   * when it has not happened in this process. Rides the signed-in document
+   * so the card can show the notice without a second request.
+   */
+  jobTokenRefreshedAt?: () => number | undefined
+  /**
    * Route path to mount. Defaults to the China variant's path so callers that
    * only serve it keep their behaviour; the global variant passes its own.
    */
@@ -169,14 +175,18 @@ export async function qoderWebStatus(deps: QoderStatusRouteOptions): Promise<Qod
       ...deps.probeKey === undefined ? {} : { probeKey: deps.probeKey },
       ...deps.useMaximumContextWindow === undefined ? {} : { useMaximumContextWindow: deps.useMaximumContextWindow() },
     }
+  const refreshedAt = deps.jobTokenRefreshedAt?.()
+  const withRefreshNotice: QoderWebStatus = refreshedAt === undefined
+    ? probed
+    : { ...probed, jobTokenRefreshedAt: refreshedAt }
   try {
     const credits = await deps.client.fetchCredits()
     // `unlimited` and `cycleResetTime` ride along as-is: the card must see
     // "no cap" as its own state, and the fetch only sets them when the
     // upstream actually reported them.
-    return { ...probed, credits }
+    return { ...withRefreshNotice, credits }
   } catch (error: unknown) {
-    return { ...probed, creditsError: safeMessage(error) }
+    return { ...withRefreshNotice, creditsError: safeMessage(error) }
   }
 }
 

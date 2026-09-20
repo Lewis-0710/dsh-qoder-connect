@@ -138,7 +138,7 @@ export function classifyUpstreamError(status: number, body: string): UpstreamErr
   for (const marker of ['rate limit', 'too many requests', 'throttl']) {
     if (lower.includes(marker)) return 'soft_rate'
   }
-  for (const marker of ['invalid token', 'invalid pat', 'unauthorized', 'forbidden', 'not authenticated']) {
+  for (const marker of ['invalid token', 'invalid pat', 'invalid job token', 'token expired', 'token has expired', 'unauthorized', 'forbidden', 'not authenticated']) {
     if (lower.includes(marker)) return 'auth'
   }
   if (status === 0 || status >= 500) return 'server'

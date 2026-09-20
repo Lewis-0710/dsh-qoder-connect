@@ -26,7 +26,7 @@ import { createQoderShim } from './shim.ts'
 import { QoderProbeService } from './probe-service.ts'
 import { newestFirst, QoderProbeStore, qoderProbePath } from './probe-store.ts'
 import { QoderUpstreamClient, validateApiKey } from './upstream.ts'
-import { createQoderTransport } from './qoder/transport/index.ts'
+import { createQoderTransport, type QoderTransport } from './qoder/transport/index.ts'
 import { getMachineId } from './qoder/transport/machine-id.ts'
 import { qoderMachineIdPath } from './paths.ts'
 import { registerQoderStatusRoute } from './web-status.ts'
@@ -34,6 +34,7 @@ import { createProbeKey, registerQoderProbeRoute } from './probe-route.ts'
 import type { QoderModelInfo } from './catalog.ts'
 import type { QoderWebCatalog, QoderWebProbeSection } from './status-paths.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
+import { emitJobTokenHint, installJobTokenHint } from './job-token-hint.ts'
 import { QODER_CONNECT_VERSION } from './version.ts'
 import { CHINA_VARIANT, GLOBAL_VARIANT, QODER_VARIANTS, type QoderVariant } from './variants.ts'
 
@@ -338,6 +339,7 @@ interface VariantRuntime {
   variant: QoderVariant
   store: QoderCredentialStore
   client: QoderUpstreamClient
+  transport: QoderTransport
   catalog: QoderCatalog
   probeStore: QoderProbeStore
   probeService: QoderProbeService
@@ -382,6 +384,12 @@ interface VariantRuntime {
   invalidate: () => void
   /** Whether the provider registered successfully. */
   registered: boolean
+  /**
+   * When the self-heal last auto-refreshed this variant's job token, epoch ms.
+   * Recorded by the transport's `onJobTokenRefreshed` callback and surfaced on
+   * the card's status document, so the otherwise invisible recovery shows.
+   */
+  jobTokenRefreshedAt: () => number | undefined
 }
 
 /** One catalog request plus the identity state it is allowed to update. */
@@ -412,6 +420,18 @@ function fallbackFor(_variant: QoderVariant): readonly QoderModelInfo[] {
   return FALLBACK_QODER_MODELS
 }
 
+/**
+ * The hint row's summary line: what happened, and when.
+ *
+ * Named here rather than in the hint module because the text is this plugin's
+ * user-facing wording, and the transport callback that produces it runs before
+ * the plugin's own scope exists.
+ */
+function jobTokenHintText(at: number): string {
+  const time = new Date(at).toLocaleTimeString('zh-CN', { hour12: false })
+  return `jobToken 已自动刷新（${time}）— 旧令牌被上游拒绝，已自动重换并恢复`
+}
+
 /** Build one variant's stores, transport, and probe state. */
 function createVariantRuntime(
   ctx: Context,
@@ -421,12 +441,24 @@ function createVariantRuntime(
   identityOf: (variantId: string) => string | undefined,
 ): VariantRuntime {
   const store = new QoderCredentialStore({ variant, logger: ctx.logger })
+  // The self-heal's auto-refresh record, surfaced on the card. Per variant:
+  // each region's transport reports its own refreshes.
+  let jobTokenRefreshedAt: number | undefined
   const transport = createQoderTransport({
     region: variant.region,
     resolvePat: () => store.patPromise(),
     // Keep the machine-id seed inside the plugin's own data directory
     // (state/) instead of letting the transport write it near $HOME.
     resolveMachineId: () => getMachineId([qoderMachineIdPath()]),
+    onJobTokenRefreshed: info => {
+      jobTokenRefreshedAt = info.at
+      ctx.logger.warn(
+        `dsh-qoder-connect: ${variant.displayName} job token was auto-refreshed after an upstream rejection`,
+      )
+      // The visible channel: one line in the conversation that triggered the
+      // refresh (the request this heal happened inside).
+      emitJobTokenHint(info.at, jobTokenHintText(info.at))
+    },
   })
   // The attachment service may not exist when the client is constructed (and
   // a headless profile never has one), so the client gets a stable proxy that
@@ -484,6 +516,7 @@ function createVariantRuntime(
     variant,
     store,
     client,
+    transport,
     catalog,
     probeStore,
     probeService,
@@ -497,6 +530,7 @@ function createVariantRuntime(
     inflightFetch: undefined,
     invalidate: () => {},
     registered: false,
+    jobTokenRefreshedAt: () => jobTokenRefreshedAt,
   }
 }
 
@@ -680,6 +714,11 @@ export function apply(ctx: Context, config: Config): void {
     id => lastIdentities.get(id),
   ))
 
+  // The session-visible hint row for a self-heal: appends the harness's own
+  // log-only `command/run` + `command/done` pair to the running conversation,
+  // so the recovery shows as one line and registers nothing globally.
+  installJobTokenHint(ctx)
+
   // Same-origin routes backing each Plugin-configuration card; the webServer
   // service is optional (a headless profile serves no browser).
   const probeKey = createProbeKey()
@@ -780,6 +819,7 @@ export function apply(ctx: Context, config: Config): void {
         ...(runtime.variant.id === CHINA_VARIANT.id
           ? { useMaximumContextWindow: () => current().useMaximumContextWindowCN === true }
           : { useMaximumContextWindow: () => current().useMaximumContextWindow === true }),
+        jobTokenRefreshedAt: runtime.jobTokenRefreshedAt,
       })
       registerQoderAuthRoute(webCtx, {
         path: runtime.variant.authPath,
@@ -797,7 +837,12 @@ export function apply(ctx: Context, config: Config): void {
           // at once.
           const identity = credentialIdentity(credential)
           adoptIdentity(runtime, identity)
-          void fetchCatalog(runtime, identity)
+          // AWAIT the fetch: the card re-reads the status the moment this answer
+          // lands, so returning first left it rendering the built-in roster
+          // until the next poll or a manual refresh. `fetchCatalog` contains
+          // its own failures (they surface as `catalog.error`), so a slow or
+          // failing upstream can never turn a valid save into an error.
+          await fetchCatalog(runtime, identity)
           return { ok: true, status: await runtime.store.status() }
         },
         clear: async () => {

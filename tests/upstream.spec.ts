@@ -327,6 +327,11 @@ describe('kindFromQoderFailure and classifyUpstreamError', () => {
     expect(classifyUpstreamError(200, 'Quota Exceeded')).toBe('quota_exceeded')
     expect(classifyUpstreamError(200, 'too many requests, quota exceeded but rate limit')).toBe('quota_exceeded')
     expect(classifyUpstreamError(200, 'Invalid PAT')).toBe('auth')
+    // Gateway-side job-token rejection wording also reads as auth, so the
+    // shim surfaces it consistently and the retry policies can route on it.
+    expect(classifyUpstreamError(200, 'Invalid job token')).toBe('auth')
+    expect(classifyUpstreamError(200, 'token has expired, sign in again')).toBe('auth')
+    expect(classifyUpstreamError(200, 'Token Expired')).toBe('auth')
     expect(classifyUpstreamError(200, 'please THROTTLEx your retries')).toBe('soft_rate')
     expect(classifyUpstreamError(500, 'boom')).toBe('server')
     expect(classifyUpstreamError(0, 'socket died')).toBe('server')

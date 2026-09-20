@@ -33,6 +33,12 @@ export interface QoderTransportOptions {
   imageUrlCacheTtlMs?: number
   /** Whether prior assistant reasoning content is preserved across turns. */
   preserveThinking?: boolean
+  /**
+   * Called once per successful re-auth refresh, right after a fresh job token
+   * was exchanged and accepted following a 401 rejection. The plugin host
+   * surfaces this as a visible "token auto-refreshed" notice on its card.
+   */
+  onJobTokenRefreshed?: (info: { region: QoderRegion; at: number }) => void
 }
 
 export function createQoderTransport(options: QoderTransportOptions): QoderTransport {

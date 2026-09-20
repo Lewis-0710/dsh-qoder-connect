@@ -5,7 +5,7 @@ import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import { QoderAuthService } from './auth.ts'
 import type { QoderCatalogModel } from '../catalog.ts'
 import type { QoderRegion } from './endpoints.ts'
-import { QoderLlmError } from '../errors.ts'
+import { QoderLlmError, isQoderAuthRejection } from '../errors.ts'
 import type { QoderLogger } from './logging.ts'
 import { fetchQoderModels } from './catalog-reader.ts'
 import {
@@ -20,6 +20,8 @@ import { QoderUsageReader } from './account-reader.ts'
 import type { QoderAccountInfo } from '../account.ts'
 import type { QoderTransport, QoderTransportOptions } from './index.ts'
 import { streamQoderChat } from './chat.ts'
+import type { CosyCredentials } from './wire/cosy.ts'
+import type { QoderWireMessage } from './wire/wire-types.ts'
 
 export const defaultStreamIdleTimeoutMs = 5 * 60 * 1000
 
@@ -41,6 +43,15 @@ export class DefaultQoderTransport implements QoderTransport {
   private readonly attachments: Pick<AttachmentStore, 'imageLimits' | 'readImageRequest'> | undefined
   private readonly imageUploader: QoderImageUploader
   private readonly preserveThinking: boolean | undefined
+  private readonly onJobTokenRefreshed: QoderTransportOptions['onJobTokenRefreshed']
+  /**
+   * Set when the self-heal exchanged a fresh job token, cleared when a chat
+   * afterwards succeeds. The notice reports "the token was rotated because the
+   * old one was rejected", which is true from that exchange on — so it must
+   * not be tied to the heal's OWN retry, which can still lose a race with a
+   * transient upstream timeout and be rescued by a later attempt.
+   */
+  private pendingRefreshAt: number | undefined
 
   constructor(options: QoderTransportOptions) {
     this.region = options.region
@@ -52,6 +63,7 @@ export class DefaultQoderTransport implements QoderTransport {
     this.metadataTimeoutMs = options.metadataTimeoutMs
     this.attachments = options.attachments
     this.preserveThinking = options.preserveThinking
+    this.onJobTokenRefreshed = options.onJobTokenRefreshed
     this.auth = new QoderAuthService({
       fetch: this.fetchImpl,
       logger: this.logger,
@@ -81,6 +93,21 @@ export class DefaultQoderTransport implements QoderTransport {
 
   stream(options: GenerateOptions, model?: QoderCatalogModel): AsyncIterable<StreamChunk> {
     return this.generate(options, model)
+  }
+
+  /**
+   * Report the pending self-heal once a chat is accepted, then clear it.
+   *
+   * The notice means "the stale token was rejected, so it was rotated, and the
+   * chat works again" — all three are true by the time a chat is accepted
+   * after the refresh, no matter which attempt delivered it.
+   */
+  private flushPendingRefreshNotice(): void {
+    if (this.pendingRefreshAt === undefined) return
+    const at = this.pendingRefreshAt
+    this.pendingRefreshAt = undefined
+    this.logger?.warn?.('[Qoder Stream] Job token was auto-refreshed after an upstream rejection; the chat has recovered')
+    this.onJobTokenRefreshed?.({ region: this.region, at })
   }
 
   async discoverModels(signal?: AbortSignal): Promise<readonly QoderCatalogModel[]> {
@@ -124,6 +151,37 @@ export class DefaultQoderTransport implements QoderTransport {
     return pat
   }
 
+  /**
+   * Stream one chat, reporting acceptance as soon as the FIRST chunk arrives.
+   *
+   * `streamQoderChat` throws before yielding anything when the upstream rejects
+   * the request, so a first chunk means the credential was accepted. Reporting
+   * at that moment — rather than after the whole stream drains — matters
+   * because the consumer may close the stream early, and code after a
+   * completed `yield*` would then never run.
+   *
+   * @param onAccepted - Called once, before the first chunk is forwarded.
+   */
+  private async * streamChat(
+    options: GenerateOptions,
+    model: QoderCatalogModel | undefined,
+    credentials: CosyCredentials,
+    messages: QoderWireMessage[],
+    onAccepted: () => void,
+  ): AsyncGenerator<StreamChunk> {
+    const stream = streamQoderChat(options, model, credentials, messages, {
+      fetch: this.fetchImpl,
+      logger: this.logger,
+      region: this.region,
+      responseHeaderTimeoutMs: this.responseHeaderTimeoutMs,
+      streamIdleTimeoutMs: this.streamIdleTimeoutMs,
+    })
+    const first = await stream.next()
+    onAccepted()
+    if (!first.done) yield first.value
+    yield* stream
+  }
+
   private async * generate(
     options: GenerateOptions,
     model?: QoderCatalogModel,
@@ -142,14 +200,67 @@ export class DefaultQoderTransport implements QoderTransport {
       credentials,
       preserveThinking: this.preserveThinking,
     })
-    // Image publication may have refreshed a rejected job token.
+    // Image publication may have refreshed a rejected job token, so the chat
+    // credential is read once more: it must be the token that actually signs.
     const chatCredentials = await this.auth.getCredentials(pat, options.signal)
-    yield* streamQoderChat(options, model, chatCredentials, messages, {
-      fetch: this.fetchImpl,
-      logger: this.logger,
-      region: this.region,
-      responseHeaderTimeoutMs: this.responseHeaderTimeoutMs,
-      streamIdleTimeoutMs: this.streamIdleTimeoutMs,
-    })
+    try {
+      // A pending notice from an earlier heal is reported as soon as this
+      // request is accepted (see `streamChat`).
+      yield* this.streamChat(options, model, chatCredentials, messages, () => {
+        this.flushPendingRefreshNotice()
+      })
+      return
+    } catch (error: unknown) {
+      // A cached job token the upstream has started rejecting (a gateway-side
+      // invalidation or its own rotation) reads as HTTP 401 before any stream
+      // byte is produced. One fresh exchange self-heals that window; a
+      // genuinely revoked PAT fails the retry identically, and the retry
+      // trades one extra exchange call against turning a transient gateway
+      // state into a false "sign in again" report for the user.
+      if (!isQoderAuthRejection(error) || options.signal?.aborted) throw error
+      this.logger?.warn?.(
+        '[Qoder Stream] Chat rejected as unauthorized; exchanging a fresh job token and retrying once',
+        { status: error.failure.status },
+      )
+    }
+    // A gateway fault window outlives one immediate retry (observed 2026-09-20:
+    // ~09:49-11:27 local, 401s lasting minutes). Two paced rounds cover a
+    // short window; a revoked PAT still terminates honestly at the first
+    // round's failure, just two exchanges later. Each retry exchanges OUTSIDE
+    // the shared single-flight (exchangeFresh): the flight can be aborted by a
+    // departing concurrent waiter (quota poll, catalog sweep), and a retry
+    // joined to it would be cancelled by a path unrelated to the chat.
+    let lastRejection: unknown
+    for (let round = 0; round < 2; round++) {
+      const refreshed = await this.auth.exchangeFresh(pat, options.signal)
+      // The rotation has happened; the first chat accepted afterwards — this
+      // round's retry or any subsequent one — is what makes it reportable.
+      this.pendingRefreshAt = Date.now()
+      try {
+        yield* this.streamChat(options, model, refreshed, messages, () => {
+          this.flushPendingRefreshNotice()
+        })
+        return
+      } catch (error: unknown) {
+        if (!isQoderAuthRejection(error) || options.signal?.aborted) throw error
+        lastRejection = error
+        if (round + 1 < 2) {
+          this.logger?.warn?.('[Qoder Stream] Fresh job token also rejected; waiting 2s and retrying once more', {
+            status: error.failure.status,
+            round: round + 1,
+          })
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(resolve, 2_000)
+            options.signal?.addEventListener('abort', () => {
+              clearTimeout(timer)
+              reject(aborted('Request was aborted during the re-auth backoff.'))
+            }, { once: true })
+          })
+        }
+      }
+    }
+    // Both paced rounds exhausted on authorization rejections: the honest
+    // answer is the last rejection, not a silently empty stream.
+    throw lastRejection
   }
 }

@@ -62,7 +62,6 @@ export class QoderAuthService {
   private readonly resolveMachineId: () => string
   private readonly region: QoderRegion
   private readonly logger: QoderLogger | undefined
-
   constructor(options: QoderAuthServiceOptions = {}) {
     this.fetchImpl = options.fetch ?? globalThis.fetch
     this.timeoutMs = options.timeoutMs ?? defaultAuthTimeoutMs
@@ -79,6 +78,18 @@ export class QoderAuthService {
     }
   }
 
+  /**
+   * Exchange a fresh job token OUTSIDE the single-flight, for the self-heal
+   * retry. The shared flight can be aborted by a departing concurrent waiter
+   * (the quota poll, the catalog sweep), and a retry that joins it would then
+   * be cancelled by a path that has nothing to do with the chat. The result
+   * replaces the cache entry.
+   */
+  async exchangeFresh(pat: string, signal?: AbortSignal): Promise<CosyCredentials> {
+    this.clear(pat)
+    const creds = await this.exchangeAndResolve(pat, signal ?? AbortSignal.timeout(this.timeoutMs))
+    return creds
+  }
 
   async getCredentials(
     pat: string,

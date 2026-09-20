@@ -303,3 +303,180 @@ test('QoderTransport signs chat with the job token refreshed during image public
   assert.equal(uploads, 2)
   assert.equal(chatUser, 'user-2')
 })
+
+test('QoderTransport retries a chat 401 once with a freshly exchanged job token and reports the refresh', async () => {
+  let exchanges = 0
+  let chatCalls = 0
+  let chatUser = ''
+  const refreshed: number[] = []
+  const transport = createQoderTransport({
+    region: 'global',
+    resolvePat: () => Promise.resolve('pt-reauth'),
+    resolveMachineId: () => 'machine-test',
+    onJobTokenRefreshed: info => { refreshed.push(info.at) },
+    fetch: (async (input: URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = String(input)
+      if (url.includes('/jobToken/exchange')) {
+        exchanges++
+        return new Response(JSON.stringify({ token: `jt-${exchanges}` }))
+      }
+      if (url.includes('/userinfo')) return new Response(JSON.stringify({ id: `user-${exchanges}` }))
+      if (url.includes('/agent_chat_generation')) {
+        chatCalls++
+        chatUser = new Headers(init?.headers).get('Cosy-User')!
+        // The cached token answers 401 once; the freshly exchanged one streams.
+        return chatCalls === 1 ? new Response('', { status: 401 }) : new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
+      }
+      throw new Error(`unexpected URL: ${url}`)
+    }) as typeof fetch,
+  })
+  const request: GenerateOptions = {
+    provider: 'qoder-official',
+    model: 'cmodel',
+    messages: [createUserMessage({ content: [{ type: 'text', text: 'Hello' }], source: { kind: 'user' } })],
+  }
+
+  for await (const _chunk of transport.stream(request)) continue
+  assert.equal(chatCalls, 2)
+  assert.equal(exchanges, 2)
+  // The retry signed with the new job token's owner, not the rejected one.
+  assert.equal(chatUser, 'user-2')
+  // The self-heal is reported once the fresh token is accepted, which is what
+  // the user-visible notice is built from.
+  assert.equal(refreshed.length, 1)
+  assert.equal(typeof refreshed[0], 'number')
+})
+
+test('QoderTransport recovers when only the second round survives the gateway fault window', async () => {
+  let exchanges = 0
+  let chatCalls = 0
+  const transport = createQoderTransport({
+    region: 'global',
+    resolvePat: () => Promise.resolve('pt-window'),
+    resolveMachineId: () => 'machine-test',
+    fetch: (async (input: URL | Request): Promise<Response> => {
+      const url = String(input)
+      if (url.includes('/jobToken/exchange')) {
+        exchanges++
+        return new Response(JSON.stringify({ token: `jt-${exchanges}` }))
+      }
+      if (url.includes('/userinfo')) return new Response(JSON.stringify({ id: `user-${exchanges}` }))
+      if (url.includes('/agent_chat_generation')) {
+        chatCalls++
+        // The whole fault window: the cached token and the first fresh one
+        // are rejected; the paced second round streams.
+        return chatCalls < 3 ? new Response('', { status: 401 }) : new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
+      }
+      throw new Error(`unexpected URL: ${url}`)
+    }) as typeof fetch,
+  })
+  const request: GenerateOptions = {
+    provider: 'qoder-official',
+    model: 'cmodel',
+    messages: [createUserMessage({ content: [{ type: 'text', text: 'Hello' }], source: { kind: 'user' } })],
+  }
+
+  for await (const _chunk of transport.stream(request)) continue
+  assert.equal(chatCalls, 3)
+  assert.equal(exchanges, 3)
+})
+
+test('QoderTransport surfaces the auth failure when the re-auth retry is rejected too', async () => {
+  let exchanges = 0
+  let chatCalls = 0
+  const transport = createQoderTransport({
+    region: 'global',
+    resolvePat: () => Promise.resolve('pt-dead'),
+    resolveMachineId: () => 'machine-test',
+    fetch: (async (input: URL | Request): Promise<Response> => {
+      const url = String(input)
+      if (url.includes('/jobToken/exchange')) {
+        exchanges++
+        return new Response(JSON.stringify({ token: `jt-${exchanges}` }))
+      }
+      if (url.includes('/userinfo')) return new Response(JSON.stringify({ id: `user-${exchanges}` }))
+      if (url.includes('/agent_chat_generation')) {
+        chatCalls++
+        return new Response('', { status: 401 })
+      }
+      throw new Error(`unexpected URL: ${url}`)
+    }) as typeof fetch,
+  })
+  const request: GenerateOptions = {
+    provider: 'qoder-official',
+    model: 'cmodel',
+    messages: [createUserMessage({ content: [{ type: 'text', text: 'Hello' }], source: { kind: 'user' } })],
+  }
+
+  await assert.rejects(async () => {
+    for await (const _chunk of transport.stream(request)) continue
+  }, (error: Error) => error instanceof QoderLlmError && error.code === 'AUTH')
+  // Paced rounds: initial + two re-auth retries, then the failure surfaces
+  // honestly instead of looping forever on a revoked PAT.
+  assert.equal(chatCalls, 3)
+  assert.equal(exchanges, 3)
+})
+
+test('QoderTransport does not re-auth on failures that are not authorization rejections', async () => {
+  let exchanges = 0
+  let chatCalls = 0
+  const transport = createQoderTransport({
+    region: 'global',
+    resolvePat: () => Promise.resolve('pt-server'),
+    resolveMachineId: () => 'machine-test',
+    fetch: (async (input: URL | Request): Promise<Response> => {
+      const url = String(input)
+      if (url.includes('/jobToken/exchange')) {
+        exchanges++
+        return new Response(JSON.stringify({ token: `jt-${exchanges}` }))
+      }
+      if (url.includes('/userinfo')) return new Response(JSON.stringify({ id: `user-${exchanges}` }))
+      if (url.includes('/agent_chat_generation')) {
+        chatCalls++
+        return new Response('', { status: 502 })
+      }
+      throw new Error(`unexpected URL: ${url}`)
+    }) as typeof fetch,
+  })
+  const request: GenerateOptions = {
+    provider: 'qoder-official',
+    model: 'cmodel',
+    messages: [createUserMessage({ content: [{ type: 'text', text: 'Hello' }], source: { kind: 'user' } })],
+  }
+
+  await assert.rejects(async () => {
+    for await (const _chunk of transport.stream(request)) continue
+  }, (error: Error) => error instanceof QoderLlmError && error.code === 'SERVER')
+  assert.equal(chatCalls, 1)
+  assert.equal(exchanges, 1)
+})
+
+test('QoderUsageReader retries a 401 usage read once with a fresh job token', async () => {
+  let exchanges = 0
+  let usageCalls = 0
+  const transport = createQoderTransport({
+    region: 'global',
+    resolvePat: () => Promise.resolve('pt-usage'),
+    resolveMachineId: () => 'machine-test',
+    fetch: (async (input: URL | Request): Promise<Response> => {
+      const url = String(input)
+      if (url.includes('/jobToken/exchange')) {
+        exchanges++
+        return new Response(JSON.stringify({ token: `jt-${exchanges}` }))
+      }
+      if (url.includes('/userinfo')) return new Response(JSON.stringify({ id: `user-${exchanges}` }))
+      if (url.includes('/quota/usage')) {
+        usageCalls++
+        // The stale token is rejected once; the refreshed one answers.
+        return usageCalls === 1 ? new Response('', { status: 401 }) : new Response(JSON.stringify({ userQuota: { total: 300, used: 0 } }))
+      }
+      throw new Error(`unexpected URL: ${url}`)
+    }) as typeof fetch,
+  })
+
+  const account = await transport.readAccount({ force: true })
+  assert.equal(usageCalls, 2)
+  assert.equal(exchanges, 2)
+  assert.equal(account.usage?.userQuota?.total, 300)
+})
+

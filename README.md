@@ -79,8 +79,8 @@ dsh plugin --profile web add dsh-qoder-connect
 
 ### 生成 PAT
 
-- **Qoder（中国版）**：登录 qoder.com.cn → 账号设置 → 个人访问令牌，生成后复制。
-- **Qoder Global（国际版）**：登录 qoder.com → 账号设置 → 个人访问令牌，生成后复制。
+- **Qoder（中国版）**：登录 qoder.com.cn → 账号设置 → 个人访问令牌，生成后复制。[直达获取](https://qoder.cn/account/integrations)
+- **Qoder Global（国际版）**：登录 qoder.com → 账号设置 → 个人访问令牌，生成后复制。[直达获取](https://qoder.com/account/integrations)
 
 （卡片内也有同样指引：「请先在 qoder.com.cn 的账号设置（账号 → 个人访问令牌）中生成 PAT，再粘贴到下方输入框。」）
 

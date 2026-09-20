@@ -1065,6 +1065,14 @@ export function QoderPluginCard({ t, variant = QODER_CN_CARD }: QoderPluginCardP
                   {status.pat === undefined ? null : patSummaryLine(status.pat)}
                   {replacing ? patEntry() : null}
                   {/*
+                    * The self-heal's visible trace: when the transport auto-
+                    * refreshed the job token after an upstream rejection, the
+                    * card says so instead of leaving the recovery invisible.
+                   */}
+                  {status.jobTokenRefreshedAt === undefined
+                    ? null
+                    : <p style={bodyStyle}>{t('jobTokenRefreshed', { time: formatTime(status.jobTokenRefreshedAt) })}</p>}
+                  {/*
                     * Catalog provenance. Without it a stale list is
                     * indistinguishable from a fresh one, and a user cannot tell
                     * whether what they see still matches the upstream. The

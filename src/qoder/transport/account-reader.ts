@@ -17,7 +17,7 @@ import type {
   QoderSubscriberProfile,
   QoderSubscriberStatus,
 } from '../account.ts'
-import { QoderLlmError } from '../errors.ts'
+import { QoderLlmError, isQoderAuthRejection } from '../errors.ts'
 import type { QoderLogger } from './logging.ts'
 import {
   opaqueCredentialKey,
@@ -239,6 +239,24 @@ export class QoderUsageReader {
   }
 
   private async loadAccount(
+    pat: string,
+    signal: AbortSignal,
+    cacheKey: string,
+  ): Promise<QoderAccountInfo> {
+    try {
+      return await this.loadAccountWith(pat, signal, cacheKey)
+    } catch (error) {
+      // The cached job token can outlive the upstream's acceptance of it; one
+      // fresh exchange self-heals that window instead of surfacing the card's
+      // quota read as an auth failure until the next credential save.
+      if (!isQoderAuthRejection(error) || signal.aborted) throw error
+      this.logger?.warn?.('[Qoder Account] Usage read rejected as unauthorized; exchanging a fresh job token and retrying once')
+    }
+    this.authService.clear(pat)
+    return this.loadAccountWith(pat, signal, cacheKey)
+  }
+
+  private async loadAccountWith(
     pat: string,
     signal: AbortSignal,
     cacheKey: string,

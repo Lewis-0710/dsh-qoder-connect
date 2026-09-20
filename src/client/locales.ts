@@ -1,4 +1,4 @@
-/** Plugin-card copy registered under the settings.qoder locale namespace. */
+﻿/** Plugin-card copy registered under the settings.qoder locale namespace. */
 
 export const en = {
   title: 'Qoder',
@@ -48,6 +48,7 @@ export const en = {
   refreshing: 'Refreshing…',
   refreshModels: 'Refresh model list',
   refreshingModels: 'Refreshing models…',
+  jobTokenRefreshed: 'Job token was auto-refreshed at {time} (upstream rejected the old one; the message recovered).',
   catalogLive: 'Model list updated {time}',
   catalogSaved: 'Showing the saved model list from {time}',
   catalogFallback: 'Showing the built-in model list (not yet updated from Qoder)',
@@ -179,6 +180,7 @@ export const zh: Record<QoderSettingsKey, string> = {
   refresh: '刷新',
   refreshing: '正在刷新…',
   refreshModels: '刷新模型列表',
+  jobTokenRefreshed: 'jobToken 已于 {time} 自动刷新（上游拒绝了旧令牌，消息已自动恢复）。',
   refreshingModels: '正在刷新模型…',
   catalogLive: '模型列表更新于 {time}',
   catalogSaved: '当前显示已保存的模型列表，更新于 {time}',

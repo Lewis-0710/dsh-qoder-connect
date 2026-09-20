@@ -247,6 +247,13 @@ type QoderWebStatus = {
   /** Card preference selecting larger declared context windows. */
   useMaximumContextWindow?: boolean;
   /**
+   * The last automatic job-token refresh the self-heal performed, epoch ms.
+   * Absent when no refresh has happened in this process. The card renders
+   * this as a visible "token auto-refreshed" notice, so an otherwise
+   * invisible recovery is observable.
+   */
+  jobTokenRefreshedAt?: number;
+  /**
    * In-process key authorizing probe control writes. Handed to the card with
    * the status document (the card is same-origin and already had to pass the
    * loopback guard); it is never persisted and rotates per process.
