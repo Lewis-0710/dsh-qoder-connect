@@ -60,6 +60,15 @@ export interface QoderStatusRouteOptions {
     status: 'claimed' | 'already-claimed' | 'no-campaign' | 'error'
     amount?: number | undefined
     message?: string | undefined
+    logs?: readonly {
+      id: string
+      date: string
+      timestamp: number
+      status: 'claimed' | 'already-claimed' | 'no-campaign' | 'error'
+      amount?: number | undefined
+      campaignKey?: string | undefined
+      message?: string | undefined
+    }[] | undefined
   } | undefined
   /**
    * Route path to mount. Defaults to the China variant's path so callers that

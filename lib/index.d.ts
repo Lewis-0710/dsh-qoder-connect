@@ -268,6 +268,15 @@ type QoderWebStatus = {
     status: 'claimed' | 'already-claimed' | 'no-campaign' | 'error';
     amount?: number | undefined;
     message?: string | undefined;
+    logs?: readonly {
+      id: string;
+      date: string;
+      timestamp: number;
+      status: 'claimed' | 'already-claimed' | 'no-campaign' | 'error';
+      amount?: number | undefined;
+      campaignKey?: string | undefined;
+      message?: string | undefined;
+    }[] | undefined;
   };
   /**
    * In-process key authorizing PAT writes, including clearing. Travels with

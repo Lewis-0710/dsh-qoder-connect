@@ -12,12 +12,23 @@ export interface VariantCheckInTarget {
   onClaimed?: () => void
 }
 
+export interface CheckInLogItem {
+  id: string
+  date: string
+  timestamp: number
+  status: 'claimed' | 'already-claimed' | 'no-campaign' | 'error'
+  amount?: number | undefined
+  campaignKey?: string | undefined
+  message?: string | undefined
+}
+
 export interface CheckInRecord {
   lastDate: string
   lastAt: number
   status: 'claimed' | 'already-claimed' | 'no-campaign' | 'error'
   amount?: number | undefined
   message?: string | undefined
+  logs?: CheckInLogItem[] | undefined
 }
 
 export interface CheckInStatusStore {
@@ -49,7 +60,21 @@ export class JsonFileCheckInStore implements CheckInStatusStore {
   write(variantId: string, record: CheckInRecord): void {
     try {
       const all = this.readAll()
-      all[variantId] = record
+      const existing = all[variantId]
+      const existingLogs = existing?.logs ?? []
+      const newLog: CheckInLogItem = {
+        id: `${record.lastDate}-${record.lastAt}`,
+        date: record.lastDate,
+        timestamp: record.lastAt,
+        status: record.status,
+        ...record.amount === undefined ? {} : { amount: record.amount },
+        ...record.message === undefined ? {} : { message: record.message },
+      }
+      const updatedLogs = [newLog, ...existingLogs.filter(l => l.id !== newLog.id)].slice(0, 30)
+      all[variantId] = {
+        ...record,
+        logs: updatedLogs,
+      }
       mkdirSync(dirname(this.filePath), { recursive: true })
       writeFileSync(this.filePath, JSON.stringify(all, null, 2), 'utf-8')
     } catch {

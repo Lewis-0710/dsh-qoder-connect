@@ -236,4 +236,39 @@ describe('CheckInScheduler', () => {
     expect(storeRecords.qoder?.status).toBe('claimed')
     expect(storeRecords.qoder?.lastDate).toBe('2026-09-21')
   })
+
+  it('accumulates and caps history logs up to 30 entries in JsonFileCheckInStore', () => {
+    const records: Record<string, CheckInRecord> = {}
+    const store: CheckInStatusStore = {
+      read: (id) => records[id],
+      write: (id, record) => {
+        const existing = records[id]?.logs ?? []
+        const newLog = {
+          id: `${record.lastDate}-${record.lastAt}`,
+          date: record.lastDate,
+          timestamp: record.lastAt,
+          status: record.status,
+          ...record.amount === undefined ? {} : { amount: record.amount },
+        }
+        records[id] = {
+          ...record,
+          logs: [newLog, ...existing].slice(0, 30),
+        }
+      },
+    }
+
+    for (let i = 1; i <= 35; i++) {
+      store.write('qoder', {
+        lastDate: `2026-09-${String(i).padStart(2, '0')}`,
+        lastAt: 1700000000000 + i * 1000,
+        status: 'claimed',
+        amount: 100,
+      })
+    }
+
+    const saved = store.read('qoder')
+    expect(saved?.logs).toHaveLength(30)
+    // Most recent is first
+    expect(saved?.logs?.[0]?.date).toBe('2026-09-35')
+  })
 })

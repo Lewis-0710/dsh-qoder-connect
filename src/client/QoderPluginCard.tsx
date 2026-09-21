@@ -567,6 +567,66 @@ function formatTokens(tokens: number): string {
   return String(tokens)
 }
 
+function CheckInLogTable({ logs = [], t }: {
+  logs?: readonly {
+    id: string
+    date: string
+    timestamp: number
+    status: string
+    amount?: number | undefined
+    message?: string | undefined
+  }[] | undefined
+  t: QoderPluginCardInjected['t']
+}): React.ReactNode {
+  if (!logs || logs.length === 0) {
+    return <p style={descriptionStyle}>{t('checkInLogEmpty')}</p>
+  }
+  return (
+    <div style={quotaListStyle}>
+      <h3 style={quotaTitleStyle}>{t('tabCheckIn')}</h3>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'flex', borderBottom: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.15))', paddingBottom: 6, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }}>
+          <span style={{ flex: 2 }}>{t('checkInLogTime')}</span>
+          <span style={{ flex: 3 }}>{t('checkInLogResult')}</span>
+          <span style={{ flex: 1, textAlign: 'right' }}>{t('checkInLogAmount')}</span>
+        </div>
+        {logs.map(log => (
+          <div key={log.id} style={{ display: 'flex', alignItems: 'center', padding: '6px 0', fontSize: 13, borderBottom: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.08))' }}>
+            <span style={{ flex: 2, color: 'var(--dsw-alias-label-secondary)' }}>{formatTime(log.timestamp)}</span>
+            <span style={{ flex: 3, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{
+                width: 6,
+                height: 6,
+                borderRadius: '50%',
+                flexShrink: 0,
+                background: log.status === 'claimed'
+                  ? 'var(--dsw-alias-status-success, #52c41a)'
+                  : log.status === 'already-claimed'
+                    ? 'var(--dsw-alias-status-info, #1890ff)'
+                    : log.status === 'no-campaign'
+                      ? 'var(--dsw-alias-label-tertiary, #999)'
+                      : 'var(--dsw-alias-status-error, #f5222d)',
+              }} />
+              <span>
+                {log.status === 'claimed'
+                  ? t('autoCheckInStatusClaimed', { amount: log.amount ?? 100 })
+                  : log.status === 'already-claimed'
+                    ? t('autoCheckInStatusAlready')
+                    : log.status === 'no-campaign'
+                      ? t('autoCheckInStatusNoCampaign')
+                      : t('autoCheckInStatusError', { message: log.message ?? '' })}
+              </span>
+            </span>
+            <span style={{ flex: 1, textAlign: 'right', fontWeight: 600, color: log.amount ? 'var(--dsw-alias-brand-primary)' : 'inherit' }}>
+              {log.amount ? `+${log.amount}` : '-'}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 /** Render Qoder PAT state, quota, catalog, and context capacities as one expandable card. */
 export function QoderPluginCard(props: QoderPluginCardProps) {
   const { t, scope, signedIn, variant, unified } = props
@@ -592,7 +652,7 @@ export function QoderPluginCard(props: QoderPluginCardProps) {
   const [patError, setPatError] = useState<string>()
   const [patNotice, setPatNotice] = useState<string>()
   const patInput = useRef<HTMLInputElement>(null)
-  const [tab, setTab] = useState<'status' | 'context' | 'details'>('status')
+  const [tab, setTab] = useState<'status' | 'context' | 'details' | 'checkin'>('status')
   const mounted = useRef(true)
   const readSeq = useRef(0)
   const manualControllers = useRef(new Set<AbortController>())
@@ -1068,20 +1128,28 @@ export function QoderPluginCard(props: QoderPluginCardProps) {
                 {status.catalog?.error === undefined
                   ? null
                   : <p style={errorStyle}>{t('catalogError', { message: status.catalog.error })}</p>}
-                <div role="tablist" style={tabBarStyle}>
-                  {(['status', 'context', 'details'] as const).map(id => (
-                    <button
-                      key={id}
-                      type="button"
-                      role="tab"
-                      aria-selected={tab === id}
-                      onClick={() => { setTab(id) }}
-                      style={{ ...tabStyle, ...(tab === id ? tabActiveStyle : {}) }}
-                    >
-                      {t(id === 'status' ? 'tabStatus' : id === 'context' ? 'tabContext' : 'tabDetails')}
-                    </button>
-                  ))}
-                </div>
+                {(() => {
+                  const hasCheckInLogs = status?.status === 'signed-in' && (status.checkIn?.logs?.length ?? 0) > 0
+                  const availableTabs: readonly ('status' | 'context' | 'details' | 'checkin')[] = hasCheckInLogs
+                    ? (['status', 'context', 'details', 'checkin'] as const)
+                    : (['status', 'context', 'details'] as const)
+                  return (
+                    <div role="tablist" style={tabBarStyle}>
+                      {availableTabs.map(id => (
+                        <button
+                          key={id}
+                          type="button"
+                          role="tab"
+                          aria-selected={tab === id}
+                          onClick={() => { setTab(id) }}
+                          style={{ ...tabStyle, ...(tab === id ? tabActiveStyle : {}) }}
+                        >
+                          {t(id === 'status' ? 'tabStatus' : id === 'context' ? 'tabContext' : id === 'details' ? 'tabDetails' : 'tabCheckIn')}
+                        </button>
+                      ))}
+                    </div>
+                  )
+                })()}
 
                 {tab === 'status' ? (
                   <div style={tabPanelStyle}>
@@ -1113,7 +1181,7 @@ export function QoderPluginCard(props: QoderPluginCardProps) {
                       onUseMaximumContextWindow={(enabled: boolean) => { void control({ action: 'set-maximum-context-window', enabled }) }}
                     />
                   </div>
-                ) : (
+                ) : tab === 'details' ? (
                   <div style={tabPanelStyle}>
                     {status.credits === undefined ? null : (
                       <div style={quotaListStyle}>
@@ -1133,6 +1201,10 @@ export function QoderPluginCard(props: QoderPluginCardProps) {
                           ))}
                       </div>
                     )}
+                  </div>
+                ) : (
+                  <div style={tabPanelStyle}>
+                    <CheckInLogTable logs={status.checkIn?.logs} t={t} />
                   </div>
                 )}
               </>

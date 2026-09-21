@@ -422,4 +422,75 @@ describe('Unified Qoder Plugin Card', () => {
     expect(mockSet).not.toHaveBeenCalled()
     act(() => contentRenderer?.unmount())
   })
+
+  it('renders check-in log tab after status, context, details when check-in logs exist', async () => {
+    request.mockImplementation(async (url: string) => {
+      const path = String(url)
+      if (path === QODER_STATUS_PATH) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            status: 'signed-in',
+            region: 'china',
+            pat: { source: 'card', savedAtMs: 1700000000000, patTail: '1111' },
+            authKey: 'cn-auth-key',
+            credits: { total: 30, accounts: [] },
+            models: [],
+            checkIn: {
+              lastDate: '2026-09-21',
+              lastAt: 1700000000000,
+              status: 'claimed',
+              amount: 100,
+              logs: [
+                {
+                  id: 'log-1',
+                  date: '2026-09-21',
+                  timestamp: 1700000000000,
+                  status: 'claimed',
+                  amount: 100,
+                },
+              ],
+            },
+          }),
+        }
+      }
+      return { ok: true, status: 200, json: async () => ({ status: 'signed-out' }) }
+    })
+
+    await act(async () => {
+      view = create(createElement(QoderPluginCard, {
+        t: t as any,
+        unified: true,
+      } as any))
+    })
+
+    // Expand card
+    const expandBtn = view!.root.findByProps({ 'aria-expanded': false })
+    await act(async () => {
+      expandBtn.props.onClick()
+    })
+
+    // Find inner tabs (Status, Context, Details, Check-in log)
+    const innerTabs = view!.root.findAll(n =>
+      n.props.role === 'tab' && (
+        n.children.includes(en.tabStatus) ||
+        n.children.includes(en.tabContext) ||
+        n.children.includes(en.tabDetails) ||
+        n.children.includes(en.tabCheckIn)
+      )
+    )
+    expect(innerTabs).toHaveLength(4)
+    const checkInTab = innerTabs.find(n => n.children.includes(en.tabCheckIn))!
+    expect(checkInTab).toBeDefined()
+
+    // Click checkin tab
+    await act(async () => {
+      checkInTab.props.onClick()
+    })
+
+    // Verify check-in log entries rendered
+    const amounts = view!.root.findAll(n => n.children.includes('+100'))
+    expect(amounts.length).toBeGreaterThanOrEqual(1)
+  })
 })
