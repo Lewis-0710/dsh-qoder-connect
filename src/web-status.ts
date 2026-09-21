@@ -53,6 +53,14 @@ export interface QoderStatusRouteOptions {
    * so the card can show the notice without a second request.
    */
   jobTokenRefreshedAt?: () => number | undefined
+  /** Check-in record query for this variant. */
+  checkIn?: () => {
+    lastDate: string
+    lastAt: number
+    status: 'claimed' | 'already-claimed' | 'no-campaign' | 'error'
+    amount?: number | undefined
+    message?: string | undefined
+  } | undefined
   /**
    * Route path to mount. Defaults to the China variant's path so callers that
    * only serve it keep their behaviour; the global variant passes its own.
@@ -179,14 +187,18 @@ export async function qoderWebStatus(deps: QoderStatusRouteOptions): Promise<Qod
   const withRefreshNotice: QoderWebStatus = refreshedAt === undefined
     ? probed
     : { ...probed, jobTokenRefreshedAt: refreshedAt }
+  const checkInRecord = deps.checkIn?.()
+  const withCheckIn: QoderWebStatus = checkInRecord === undefined
+    ? withRefreshNotice
+    : { ...withRefreshNotice, checkIn: checkInRecord }
   try {
     const credits = await deps.client.fetchCredits()
     // `unlimited` and `cycleResetTime` ride along as-is: the card must see
     // "no cap" as its own state, and the fetch only sets them when the
     // upstream actually reported them.
-    return { ...withRefreshNotice, credits }
+    return { ...withCheckIn, credits }
   } catch (error: unknown) {
-    return { ...withRefreshNotice, creditsError: safeMessage(error) }
+    return { ...withCheckIn, creditsError: safeMessage(error) }
   }
 }
 

@@ -260,6 +260,16 @@ type QoderWebStatus = {
    */
   probeKey?: string;
   /**
+   * Daily check-in status record for this variant.
+   */
+  checkIn?: {
+    lastDate: string;
+    lastAt: number;
+    status: 'claimed' | 'already-claimed' | 'no-campaign' | 'error';
+    amount?: number | undefined;
+    message?: string | undefined;
+  };
+  /**
    * In-process key authorizing PAT writes, including clearing. Travels with
    * the document for the same reason `probeKey` does.
    */
@@ -692,6 +702,17 @@ interface QoderAccountInfo {
   updatedAt: string;
 }
 //#endregion
+//#region src/qoder/transport/checkin.d.ts
+interface QoderCheckInResult {
+  variantId: string;
+  date: string;
+  timestamp: number;
+  status: 'claimed' | 'already-claimed' | 'no-campaign' | 'error';
+  amount?: number | undefined;
+  campaignKey?: string | undefined;
+  message?: string | undefined;
+}
+//#endregion
 //#region src/qoder/transport/index.d.ts
 interface QoderTransport {
   stream(options: GenerateOptions, model?: QoderCatalogModel): AsyncIterable<StreamChunk>;
@@ -700,6 +721,7 @@ interface QoderTransport {
     force?: boolean | undefined;
     signal?: AbortSignal | undefined;
   }): Promise<QoderAccountInfo>;
+  checkIn(signal?: AbortSignal): Promise<QoderCheckInResult>;
 }
 //#endregion
 //#region src/upstream.d.ts
@@ -840,6 +862,10 @@ declare class QoderUpstreamClient {
    * account's "unlimited" state.
    */
   fetchCredits(signal?: AbortSignal): Promise<QoderCredits>;
+  /**
+   * Run daily benefit check-in for this client's variant.
+   */
+  checkIn(signal?: AbortSignal): Promise<QoderCheckInResult>;
   /**
    * Stream one translated chat-completions request.
    *
@@ -1345,6 +1371,10 @@ interface Config {
   sidebarQuotaCN?: boolean;
   /** Show the global variant's sidebar quota card. */
   sidebarQuotaGlobal?: boolean;
+  /** Automatically check in daily at 10:00 (UTC+8) to claim credits for China variant. */
+  autoCheckInCN?: boolean;
+  /** Automatically check in daily at 10:00 (UTC+8) to claim credits for Global variant. */
+  autoCheckInGlobal?: boolean;
   /**
    * Sidebar quota refresh interval in milliseconds. One shared value (both
    * cards poll on it) because the two widgets hit the same rate-limited

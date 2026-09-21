@@ -233,6 +233,16 @@ export type QoderWebStatus =
      */
     probeKey?: string
     /**
+     * Daily check-in status record for this variant.
+     */
+    checkIn?: {
+      lastDate: string
+      lastAt: number
+      status: 'claimed' | 'already-claimed' | 'no-campaign' | 'error'
+      amount?: number | undefined
+      message?: string | undefined
+    }
+    /**
      * In-process key authorizing PAT writes, including clearing. Travels with
      * the document for the same reason `probeKey` does.
      */

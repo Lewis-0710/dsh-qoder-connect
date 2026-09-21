@@ -407,8 +407,10 @@ describe('Unified Qoder Plugin Card', () => {
     })
 
     const switches = contentRenderer!.root.findAll(n => n.props.role === 'switch')
-    expect(switches[0]!.props.disabled).toBe(true)
-    expect(switches[1]!.props.disabled).toBe(true)
+    expect(switches.length).toBeGreaterThanOrEqual(2)
+    for (const sw of switches) {
+      expect(sw.props.disabled).toBe(true)
+    }
 
     // Even if onToggle was triggered directly with next=true, write() must intercept and drop it
     const toggleRows = contentRenderer!.root.findAll(n => typeof n.props.onToggle === 'function')

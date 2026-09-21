@@ -5,16 +5,19 @@ import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type { QoderAccountInfo } from '../account.ts'
 import type { QoderCatalogModel } from '../catalog.ts'
 import type { QoderRegion } from '../region.ts'
+import type { QoderCheckInResult } from './checkin.ts'
 import { DefaultQoderTransport, defaultStreamIdleTimeoutMs } from './default-transport.ts'
 import { defaultResponseHeaderTimeoutMs } from './request.ts'
 import type { QoderLogger } from './logging.ts'
 
 export { defaultResponseHeaderTimeoutMs, defaultStreamIdleTimeoutMs }
+export type { QoderCheckInResult }
 
 export interface QoderTransport {
   stream(options: GenerateOptions, model?: QoderCatalogModel): AsyncIterable<StreamChunk>
   discoverModels(signal?: AbortSignal): Promise<readonly QoderCatalogModel[]>
   readAccount(options?: { force?: boolean | undefined; signal?: AbortSignal | undefined }): Promise<QoderAccountInfo>
+  checkIn(signal?: AbortSignal): Promise<QoderCheckInResult>
 }
 
 export interface QoderTransportOptions {

@@ -31,6 +31,7 @@ import { getMachineId } from './qoder/transport/machine-id.ts'
 import { qoderMachineIdPath } from './paths.ts'
 import { registerQoderStatusRoute } from './web-status.ts'
 import { createProbeKey, registerQoderProbeRoute } from './probe-route.ts'
+import { CheckInScheduler, JsonFileCheckInStore } from './checkin-scheduler.ts'
 import type { QoderModelInfo } from './catalog.ts'
 import type { QoderWebCatalog, QoderWebProbeSection } from './status-paths.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
@@ -248,6 +249,10 @@ export interface Config {
   sidebarQuotaCN?: boolean
   /** Show the global variant's sidebar quota card. */
   sidebarQuotaGlobal?: boolean
+  /** Automatically check in daily at 10:00 (UTC+8) to claim credits for China variant. */
+  autoCheckInCN?: boolean
+  /** Automatically check in daily at 10:00 (UTC+8) to claim credits for Global variant. */
+  autoCheckInGlobal?: boolean
   /**
    * Sidebar quota refresh interval in milliseconds. One shared value (both
    * cards poll on it) because the two widgets hit the same rate-limited
@@ -275,6 +280,9 @@ const MODEL_CONTEXT_WINDOWS_FIELD = z.dict(z.number().min(1), z.string())
 /** Sidebar quota toggle (one per variant; both live on the shared quota card). */
 const QUOTA_TOGGLE_FIELD = z.boolean().default(false)
   .description('Show this variant’s remaining-credit card in the sidebar footer (off by default)')
+/** Automatic check-in toggle. */
+const AUTO_CHECK_IN_FIELD = z.boolean().default(false)
+  .description('每天 10:00 (UTC+8) 自动签到领取算力额度（默认关闭）')
 /**
  * Quota poll interval: default 5 minutes, floor 1 minute. The status route
  * performs a live upstream billing call per request with no cache, so an
@@ -297,6 +305,8 @@ export const Config: z<Config> = z.object({
   modelContextWindowsCN: MODEL_CONTEXT_WINDOWS_FIELD,
   sidebarQuotaCN: QUOTA_TOGGLE_FIELD,
   sidebarQuotaGlobal: QUOTA_TOGGLE_FIELD,
+  autoCheckInCN: AUTO_CHECK_IN_FIELD,
+  autoCheckInGlobal: AUTO_CHECK_IN_FIELD,
   quotaPollMs: QUOTA_POLL_FIELD,
 })
 
@@ -331,6 +341,8 @@ const GLOBAL_SECTION: z<Config> = z.object({
 const QUOTA_SECTION: z<Config> = z.object({
   sidebarQuotaCN: QUOTA_TOGGLE_FIELD,
   sidebarQuotaGlobal: QUOTA_TOGGLE_FIELD,
+  autoCheckInCN: AUTO_CHECK_IN_FIELD,
+  autoCheckInGlobal: AUTO_CHECK_IN_FIELD,
   quotaPollMs: QUOTA_POLL_FIELD,
 })
 
@@ -751,6 +763,25 @@ export function apply(ctx: Context, config: Config): void {
     id => lastIdentities.get(id),
   ))
 
+  const checkInStore = new JsonFileCheckInStore()
+  const checkInScheduler = new CheckInScheduler({
+    targets: runtimes.map(runtime => ({
+      variantId: runtime.variant.id,
+      service: (runtime.transport as unknown as { checkInService: any }).checkInService,
+      getPat: async () => runtime.store.patPromise(),
+      onClaimed: () => {
+        void runtime.client.fetchCredits().catch(() => undefined)
+      },
+    })),
+    isEnabled: variantId => {
+      const cfg = current()
+      if (variantId === CHINA_VARIANT.id) return cfg.autoCheckInCN === true
+      return cfg.autoCheckInGlobal === true
+    },
+    store: checkInStore,
+  })
+  checkInScheduler.start()
+
   // The session-visible hint row for a self-heal: appends the harness's own
   // log-only `command/run` + `command/done` pair to the running conversation,
   // so the recovery shows as one line and registers nothing globally.
@@ -857,6 +888,7 @@ export function apply(ctx: Context, config: Config): void {
           ? { useMaximumContextWindow: () => current().useMaximumContextWindowCN === true }
           : { useMaximumContextWindow: () => current().useMaximumContextWindow === true }),
         jobTokenRefreshedAt: runtime.jobTokenRefreshedAt,
+        checkIn: () => checkInStore.read(runtime.variant.id),
       })
       registerQoderAuthRoute(webCtx, {
         path: runtime.variant.authPath,
@@ -1014,6 +1046,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.effect(() => () => {
     stopped = true
+    checkInScheduler.dispose()
     for (const timer of timers) clearInterval(timer)
     timers.length = 0
     detach(ctx, clearHostHeartbeat(), 'host heartbeat cleanup')

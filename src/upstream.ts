@@ -43,7 +43,7 @@ import { PROBE_MAX_TOKENS, PROBE_PROMPT, type ProbeAttempt } from './probe.ts'
 import type { QoderCatalogModel } from './qoder/catalog.ts'
 import type { QoderRegion } from './qoder/region.ts'
 import type { QoderAccountInfo, QoderQuotaUsage } from './qoder/account.ts'
-import { createQoderTransport, type QoderTransport } from './qoder/transport/index.ts'
+import { createQoderTransport, type QoderCheckInResult, type QoderTransport } from './qoder/transport/index.ts'
 import type { QoderModelBilling, QoderModelInfo, QoderModelReasoning } from './catalog.ts'
 
 /**
@@ -694,6 +694,13 @@ export class QoderUpstreamClient {
       ...(unlimited ? { unlimited: true as const } : {}),
       ...usage.expiresAt === undefined ? {} : { cycleResetTime: usage.expiresAt },
     }
+  }
+
+  /**
+   * Run daily benefit check-in for this client's variant.
+   */
+  async checkIn(signal?: AbortSignal): Promise<QoderCheckInResult> {
+    return this.transport.checkIn(signal)
   }
 
   /**

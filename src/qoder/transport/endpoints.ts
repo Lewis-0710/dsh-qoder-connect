@@ -83,3 +83,14 @@ export function getQoderWebSearchUrl(region: QoderRegion = 'global'): string {
   const { centerUrl } = resolveQoderEndpoints(region)
   return `${centerUrl.replace(/\/+$/u, '')}/algo${qoderWebSearchPath}?Encode=1`
 }
+
+export function getQoderCampaignsUrl(region: QoderRegion = 'global'): string {
+  const { openApiUrl } = resolveQoderEndpoints(region)
+  return `${openApiUrl}/sash/api/v1/me/campaigns`
+}
+
+export function getQoderClaimCampaignUrl(region: QoderRegion = 'global', campaignId: string): string {
+  const { openApiUrl } = resolveQoderEndpoints(region)
+  return `${openApiUrl}/sash/api/v1/me/campaigns/${encodeURIComponent(campaignId)}/claim`
+}
+

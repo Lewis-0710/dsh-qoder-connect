@@ -40,6 +40,8 @@ export interface QuotaSettingsCardInjected {
 export interface QuotaSection {
   sidebarQuotaCN?: boolean
   sidebarQuotaGlobal?: boolean
+  autoCheckInCN?: boolean
+  autoCheckInGlobal?: boolean
   quotaPollMs?: number
 }
 
@@ -48,7 +50,7 @@ export type QuotaSettingsCardProps =
   & Partial<QuotaSettingsCardInjected>
 
 /** The settings fields this card edits, in display order. */
-const FIELDS = ['sidebarQuotaCN', 'sidebarQuotaGlobal', 'quotaPollMs'] as const
+const FIELDS = ['sidebarQuotaCN', 'sidebarQuotaGlobal', 'autoCheckInCN', 'autoCheckInGlobal', 'quotaPollMs'] as const
 type Field = (typeof FIELDS)[number]
 
 /** The default poll interval shown before a value is stored. */
@@ -60,13 +62,29 @@ const POLL_MIN_MS = 60_000
 interface QuotaSettingsProjection {
   status: 'loading' | 'ready' | 'unavailable'
   writable: boolean
-  values: { sidebarQuotaCN: boolean; sidebarQuotaGlobal: boolean; quotaPollMs: number }
+  values: {
+    sidebarQuotaCN: boolean
+    sidebarQuotaGlobal: boolean
+    autoCheckInCN: boolean
+    autoCheckInGlobal: boolean
+    quotaPollMs: number
+  }
 }
 
 /** Read the section values out of a scope snapshot (defaults when absent). */
 function project(scope: SettingsScope<QuotaSection> | undefined): QuotaSettingsProjection {
   if (scope === undefined) {
-    return { status: 'unavailable', writable: false, values: { sidebarQuotaCN: false, sidebarQuotaGlobal: false, quotaPollMs: POLL_DEFAULT_MS } }
+    return {
+      status: 'unavailable',
+      writable: false,
+      values: {
+        sidebarQuotaCN: false,
+        sidebarQuotaGlobal: false,
+        autoCheckInCN: false,
+        autoCheckInGlobal: false,
+        quotaPollMs: POLL_DEFAULT_MS,
+      },
+    }
   }
   const snapshot = scope.getSnapshot()
   const value = snapshot.value ?? {}
@@ -76,6 +94,8 @@ function project(scope: SettingsScope<QuotaSection> | undefined): QuotaSettingsP
     values: {
       sidebarQuotaCN: value.sidebarQuotaCN === true,
       sidebarQuotaGlobal: value.sidebarQuotaGlobal === true,
+      autoCheckInCN: value.autoCheckInCN === true,
+      autoCheckInGlobal: value.autoCheckInGlobal === true,
       quotaPollMs: typeof value.quotaPollMs === 'number' ? value.quotaPollMs : POLL_DEFAULT_MS,
     },
   }
@@ -98,7 +118,13 @@ let cachedProjection: QuotaSettingsProjection | undefined
 const UNAVAILABLE: QuotaSettingsProjection = {
   status: 'unavailable',
   writable: false,
-  values: { sidebarQuotaCN: false, sidebarQuotaGlobal: false, quotaPollMs: POLL_DEFAULT_MS },
+  values: {
+    sidebarQuotaCN: false,
+    sidebarQuotaGlobal: false,
+    autoCheckInCN: false,
+    autoCheckInGlobal: false,
+    quotaPollMs: POLL_DEFAULT_MS,
+  },
 }
 
 function stableProject(scope: SettingsScope<QuotaSection> | undefined): QuotaSettingsProjection {
@@ -111,6 +137,8 @@ function stableProject(scope: SettingsScope<QuotaSection> | undefined): QuotaSet
     cachedProjection.writable !== next.writable ||
     cachedProjection.values.sidebarQuotaCN !== next.values.sidebarQuotaCN ||
     cachedProjection.values.sidebarQuotaGlobal !== next.values.sidebarQuotaGlobal ||
+    cachedProjection.values.autoCheckInCN !== next.values.autoCheckInCN ||
+    cachedProjection.values.autoCheckInGlobal !== next.values.autoCheckInGlobal ||
     cachedProjection.values.quotaPollMs !== next.values.quotaPollMs
   ) {
     cachedScope = scope
@@ -227,6 +255,12 @@ export function QuotaSettingsContent({ t = key => key, scope, signedIn }: QuotaS
     if (field === 'sidebarQuotaGlobal' && value === true && !signed.global) {
       return
     }
+    if (field === 'autoCheckInCN' && value === true && !signed.cn) {
+      return
+    }
+    if (field === 'autoCheckInGlobal' && value === true && !signed.global) {
+      return
+    }
     void scope?.set(field, value)
   }
   const minutes = Math.max(POLL_MIN_MS / 60_000, Math.round(projection.values.quotaPollMs / 60_000))
@@ -247,6 +281,22 @@ export function QuotaSettingsContent({ t = key => key, scope, signedIn }: QuotaS
         disabled={!signed.global}
         disabledHint={t('quotaSignInRequired')}
         onToggle={next => write('sidebarQuotaGlobal', next)}
+      />
+      <ToggleRow
+        label={t('autoCheckInCN')}
+        hint={t('autoCheckInHintCN')}
+        checked={projection.values.autoCheckInCN}
+        disabled={!signed.cn}
+        disabledHint={t('quotaSignInRequired')}
+        onToggle={next => write('autoCheckInCN', next)}
+      />
+      <ToggleRow
+        label={t('autoCheckInGlobal')}
+        hint={t('autoCheckInHintGlobal')}
+        checked={projection.values.autoCheckInGlobal}
+        disabled={!signed.global}
+        disabledHint={t('quotaSignInRequired')}
+        onToggle={next => write('autoCheckInGlobal', next)}
       />
       <div style={{ ...rowStyle, borderBottom: 'none', paddingBottom: 0 }}>
         <div style={rowTextStyle}>

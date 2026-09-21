@@ -17,6 +17,7 @@ import {
 import { translateQoderMessages, validateQoderRequestShape } from './wire/serialize.ts'
 import { QoderImageUploader } from './image-upload.ts'
 import { QoderUsageReader } from './account-reader.ts'
+import { QoderCheckInService, type QoderCheckInResult } from './checkin.ts'
 import type { QoderAccountInfo } from '../account.ts'
 import type { QoderTransport, QoderTransportOptions } from './index.ts'
 import { streamQoderChat } from './chat.ts'
@@ -52,6 +53,7 @@ export class DefaultQoderTransport implements QoderTransport {
   private readonly metadataTimeoutMs: number | undefined
   private readonly auth: QoderAuthService
   private readonly usage: QoderUsageReader
+  private readonly checkInService: QoderCheckInService
   private readonly modelFlights = new SingleFlight<readonly QoderCatalogModel[]>()
   private readonly attachments: Pick<AttachmentStore, 'imageLimits' | 'readImageRequest'> | undefined
   private readonly imageUploader: QoderImageUploader
@@ -108,6 +110,13 @@ export class DefaultQoderTransport implements QoderTransport {
       },
     })
     this.usage = new QoderUsageReader({
+      authService: this.auth,
+      fetch: this.fetchImpl,
+      logger: this.logger,
+      region: this.region,
+      timeoutMs: this.metadataTimeoutMs,
+    })
+    this.checkInService = new QoderCheckInService({
       authService: this.auth,
       fetch: this.fetchImpl,
       logger: this.logger,
@@ -191,6 +200,11 @@ export class DefaultQoderTransport implements QoderTransport {
       force: options?.force,
       signal: options?.signal,
     })
+  }
+
+  async checkIn(signal?: AbortSignal): Promise<QoderCheckInResult> {
+    const pat = await this.requirePat(signal)
+    return this.checkInService.checkIn(pat, signal)
   }
 
   private async requirePat(signal?: AbortSignal): Promise<string> {

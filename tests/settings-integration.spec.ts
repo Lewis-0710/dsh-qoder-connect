@@ -295,7 +295,7 @@ describe('Qoder Host settings integration', () => {
     // to point at a file.
     expect(fieldsOf('qoder')).toEqual(['probeConsent', 'useMaximumContextWindowCN', 'modelContextWindowsCN'])
     expect(fieldsOf('qoder-global')).toEqual(['useMaximumContextWindow', 'modelContextWindows'])
-    expect(fieldsOf('qoder-quota')).toEqual(['sidebarQuotaCN', 'sidebarQuotaGlobal', 'quotaPollMs'])
+    expect(fieldsOf('qoder-quota')).toEqual(['sidebarQuotaCN', 'sidebarQuotaGlobal', 'autoCheckInCN', 'autoCheckInGlobal', 'quotaPollMs'])
 
     // A write through one section must reach only THAT variant. The same live
     // roster is served to both arms, and each now carries its own maximum-window
