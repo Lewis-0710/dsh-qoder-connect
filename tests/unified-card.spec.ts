@@ -2,9 +2,11 @@ import { createElement } from 'react'
 import { act, create, type ReactTestRenderer } from 'react-test-renderer'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QoderPluginCard, type QoderPluginCardProps } from '../src/client/QoderPluginCard.tsx'
+import { QuotaSettingsContent } from '../src/client/QuotaSettingsCard.tsx'
+import { SidebarQuotaCard } from '../src/client/SidebarQuotaCard.tsx'
 import { en, zh } from '../src/client/locales.ts'
 import type { QoderSettingsKey } from '../src/client/locales.ts'
-import { noteQuotaSignIn } from '../src/client/quota-settings-store.ts'
+import { noteQuotaSignIn, noteQuotaStatus, setQuotaToggles } from '../src/client/quota-settings-store.ts'
 import { QODER_AUTH_PATH, QODER_GLOBAL_AUTH_PATH, QODER_GLOBAL_STATUS_PATH, QODER_STATUS_PATH } from '../src/status-paths.ts'
 
 const t = (key: QoderSettingsKey, params: Record<string, unknown> = {}): string =>
@@ -62,10 +64,16 @@ describe('Unified Qoder Plugin Card', () => {
       addEventListener: () => {},
       removeEventListener: () => {},
     })
+    vi.stubGlobal('document', {
+      hidden: false,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })
   })
 
   afterEach(() => {
     act(() => view?.unmount())
+    setQuotaToggles(false, false)
     noteQuotaSignIn('qoder', false)
     noteQuotaSignIn('qoder-global', false)
     vi.unstubAllGlobals()
@@ -236,5 +244,180 @@ describe('Unified Qoder Plugin Card', () => {
     const updatedSwitches = view!.root.findAll(n => n.props.role === 'switch')
     const updatedCnSwitch = updatedSwitches[0]!
     expect(updatedCnSwitch.props.disabled).toBe(false)
+  })
+
+  it('(a) disables quota switches when accounts are not signed in and (b) prevents disabled click from calling scope.set', async () => {
+    request.mockImplementation(async () => {
+      return { ok: true, status: 200, json: async () => ({ status: 'signed-out' }) }
+    })
+    const mockSet = vi.fn()
+    const fakeScope = {
+      getSnapshot: () => ({
+        status: 'ready' as const,
+        writable: true,
+        value: { sidebarQuotaCN: false, sidebarQuotaGlobal: false, quotaPollMs: 300_000 },
+      }),
+      subscribe: () => () => {},
+      set: mockSet,
+    }
+    const props = {
+      t: t as QoderPluginCardProps['t'],
+      unified: true,
+      scope: fakeScope as any,
+      signedIn: () => ({ cn: false, global: false }),
+    } as unknown as Parameters<typeof QoderPluginCard>[0]
+
+    await act(async () => {
+      view = create(createElement(QoderPluginCard, props))
+    })
+
+    // Expand the card
+    const headerBtn = view!.root.findAllByType('button')[0]!
+    await act(async () => { headerBtn.props.onClick() })
+
+    // (a) Verify switches are disabled when not signed in
+    const switches = view!.root.findAll(n => n.props.role === 'switch')
+    expect(switches.length).toBeGreaterThanOrEqual(2)
+    const [cnSwitch, globalSwitch] = switches
+    expect(cnSwitch!.props.disabled).toBe(true)
+    expect(globalSwitch!.props.disabled).toBe(true)
+
+    // (b) Simulate clicking switches in disabled state; verify scope.set is NEVER triggered
+    await act(async () => {
+      cnSwitch!.props.onClick()
+      globalSwitch!.props.onClick()
+    })
+    expect(mockSet).not.toHaveBeenCalled()
+  })
+
+  it('(c) safely blocks SidebarQuotaCard click when status is signed-out in wide and rail modes', async () => {
+    request.mockImplementation(async () => {
+      return { ok: true, status: 200, json: async () => ({ status: 'signed-out' }) }
+    })
+
+    // Enable quota toggles so SidebarQuotaCard renders instead of returning null
+    setQuotaToggles(true, true)
+    noteQuotaStatus('qoder', { status: 'signed-out' })
+    noteQuotaSignIn('qoder', false)
+
+    const openMock = vi.fn()
+
+    // 1. Wide mode test
+    let wideView: ReactTestRenderer | undefined
+    await act(async () => {
+      wideView = create(createElement(SidebarQuotaCard, {
+        t: t as any,
+        statusPath: QODER_STATUS_PATH,
+        open: openMock,
+        wide: true,
+      } as any))
+    })
+
+    const wideBtn = wideView!.root.findByProps({ className: 'qdp-foot' })
+    expect(wideBtn.props.disabled).toBe(true)
+
+    // Attempt clicking wide button while signed-out
+    await act(async () => {
+      wideBtn.props.onClick()
+    })
+    expect(openMock).not.toHaveBeenCalled()
+    act(() => wideView?.unmount())
+
+    // 2. Rail mode (collapsed icon button) test
+    let railView: ReactTestRenderer | undefined
+    await act(async () => {
+      railView = create(createElement(SidebarQuotaCard, {
+        t: t as any,
+        statusPath: QODER_STATUS_PATH,
+        open: openMock,
+        wide: false,
+      } as any))
+    })
+
+    const railBtn = railView!.root.findByProps({ className: 'qdp-railButton' })
+    expect(railBtn.props.disabled).toBe(true)
+
+    // Attempt clicking rail button while signed-out
+    await act(async () => {
+      railBtn.props.onClick()
+    })
+    expect(openMock).not.toHaveBeenCalled()
+    act(() => railView?.unmount())
+
+    // 3. When signed-in, clicking wide button opens dashboard
+    request.mockImplementation(async (url: string) => {
+      const path = String(url)
+      if (path === QODER_STATUS_PATH) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            status: 'signed-in',
+            region: 'china',
+            credits: { total: 50, accounts: [] },
+          }),
+        }
+      }
+      return { ok: true, status: 200, json: async () => ({ status: 'signed-out' }) }
+    })
+    noteQuotaStatus('qoder', {
+      status: 'signed-in',
+      credits: { total: 50, accounts: [] },
+    })
+    noteQuotaSignIn('qoder', true)
+
+    let signedInView: ReactTestRenderer | undefined
+    await act(async () => {
+      signedInView = create(createElement(SidebarQuotaCard, {
+        t: t as any,
+        statusPath: QODER_STATUS_PATH,
+        open: openMock,
+        wide: true,
+      } as any))
+    })
+
+    const signedInBtn = signedInView!.root.findByProps({ className: 'qdp-foot' })
+    expect(signedInBtn.props.disabled).toBe(false)
+
+    await act(async () => {
+      signedInBtn.props.onClick()
+    })
+    expect(openMock).toHaveBeenCalledTimes(1)
+    act(() => signedInView?.unmount())
+  })
+
+  it('rejects write to scope.set when attempting to turn on sidebarQuotaCN/Global while unsigned', async () => {
+    const mockSet = vi.fn()
+    const fakeScope = {
+      getSnapshot: () => ({
+        status: 'ready' as const,
+        writable: true,
+        value: { sidebarQuotaCN: false, sidebarQuotaGlobal: false, quotaPollMs: 300_000 },
+      }),
+      subscribe: () => () => {},
+      set: mockSet,
+    }
+    let contentRenderer: ReactTestRenderer | undefined
+    await act(async () => {
+      contentRenderer = create(createElement(QuotaSettingsContent, {
+        t: t as any,
+        scope: fakeScope as any,
+        signedIn: () => ({ cn: false, global: false }),
+      }))
+    })
+
+    const switches = contentRenderer!.root.findAll(n => n.props.role === 'switch')
+    expect(switches[0]!.props.disabled).toBe(true)
+    expect(switches[1]!.props.disabled).toBe(true)
+
+    // Even if onToggle was triggered directly with next=true, write() must intercept and drop it
+    const toggleRows = contentRenderer!.root.findAll(n => typeof n.props.onToggle === 'function')
+    for (const row of toggleRows) {
+      await act(async () => {
+        row.props.onToggle(true)
+      })
+    }
+    expect(mockSet).not.toHaveBeenCalled()
+    act(() => contentRenderer?.unmount())
   })
 })

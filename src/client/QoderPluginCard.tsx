@@ -845,6 +845,10 @@ export function QoderPluginCard(props: QoderPluginCardProps) {
         return
       }
       setPatDraft('')
+      const signedOutDoc: QoderWebStatus = { status: 'signed-out', authKey: key }
+      setStatus(signedOutDoc)
+      setSignedInState(false)
+      noteQuotaStatus(currentVariant.id, signedOutDoc)
       noteQuotaSignIn(currentVariant.id, false)
       await refresh(controller.signal)
     } catch (error: unknown) {
@@ -944,9 +948,9 @@ export function QoderPluginCard(props: QoderPluginCardProps) {
   }
 
   // Derive status dot for the tab switcher
-  const reported = signedIn?.() ?? liveSignIn
-  const cnSignedIn = Boolean(reported.cn || liveSignIn.cn)
-  const globalSignedIn = Boolean(reported.global || liveSignIn.global)
+  const reported = signedIn?.()
+  const cnSignedIn = reported !== undefined ? reported.cn : liveSignIn.cn
+  const globalSignedIn = reported !== undefined ? reported.global : liveSignIn.global
   const cnDotStatus: 'loading' | QoderWebStatus['status'] = isUnified && activeVariantId === 'qoder'
     ? (status === undefined ? 'loading' : status.status)
     : (cnSignedIn ? 'signed-in' : 'signed-out')
@@ -990,7 +994,7 @@ export function QoderPluginCard(props: QoderPluginCardProps) {
           {isUnified ? (
             <>
               {/* Top section: Qoder 侧栏设置 */}
-              <QuotaSettingsContent t={t} scope={scope} signedIn={signedIn ?? (() => ({ cn: false, global: false }))} />
+              <QuotaSettingsContent t={t} scope={scope} signedIn={signedIn} />
               {/* Segmented Tab Switcher (Figure 1) */}
               <div style={segmentedContainerStyle} role="tablist" aria-label="Qoder Version Selection">
                 <button

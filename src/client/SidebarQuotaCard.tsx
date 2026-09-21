@@ -237,6 +237,7 @@ export function SidebarQuotaCard(props: SidebarQuotaCardProps): React.ReactNode 
   useSyncExternalStore(onQuotaSettingsChange, quotaSettingsRevision)
   const enabled = variantId === 'qoder' ? quotaToggles().cn : quotaToggles().global
   const status = quotaStatus(variantId)
+  const signedIn = status?.status === 'signed-in'
 
   // Poll on the configured interval for as long as the card is enabled —
   // the user's design: the SIDEBAR card keeps itself current on the setting's
@@ -263,21 +264,26 @@ export function SidebarQuotaCard(props: SidebarQuotaCardProps): React.ReactNode 
         if (!disposed) setFailed(true)
       }
     }
+    const isHidden = (): boolean => typeof document !== 'undefined' && document.hidden
     const loop = (): void => {
-      if (document.hidden) return
+      if (isHidden()) return
       void refresh()
     }
     timer = window.setInterval(loop, Math.max(60_000, quotaPollMs()))
     void refresh()
     const onVisible = (): void => {
-      if (!document.hidden) loop()
+      if (!isHidden()) loop()
     }
-    document.addEventListener('visibilitychange', onVisible)
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisible)
+    }
     return () => {
       disposed = true
       controller.abort()
       if (timer !== undefined) window.clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVisible)
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisible)
+      }
     }
   }, [statusPath, enabled, variantId])
 
@@ -310,7 +316,11 @@ export function SidebarQuotaCard(props: SidebarQuotaCardProps): React.ReactNode 
         className="qdp-railButton"
         aria-label={title}
         title={title}
-        onClick={() => open?.()}
+        disabled={!signedIn}
+        onClick={() => {
+          if (!signedIn) return
+          open?.()
+        }}
       >
         <Ring percent={ringPercent} warn={ringWarn} size={18} />
       </button>
@@ -323,7 +333,11 @@ export function SidebarQuotaCard(props: SidebarQuotaCardProps): React.ReactNode 
       className="qdp-foot"
       aria-label={title}
       title={title}
-      onClick={() => open?.()}
+      disabled={!signedIn}
+      onClick={() => {
+        if (!signedIn) return
+        open?.()
+      }}
     >
       <span className="qdp-footTop">
         <Ring percent={ringPercent} warn={ringWarn} size={16} />

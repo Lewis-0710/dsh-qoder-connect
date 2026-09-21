@@ -23,7 +23,7 @@ import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import type { QoderSettingsKey } from './locales.ts'
 import { isQoderWebStatus } from './status-document.ts'
-import { noteQuotaSignIn, onQuotaSettingsChange, quotaSignInState, variantOfStatusPath } from './quota-settings-store.ts'
+import { noteQuotaSignIn, onQuotaSettingsChange, quotaSignInState, quotaStatus, variantOfStatusPath } from './quota-settings-store.ts'
 import { QODER_GLOBAL_STATUS_PATH, QODER_STATUS_PATH } from '../status-paths.ts'
 
 /** Everything the registration binds into the card. */
@@ -31,7 +31,7 @@ export interface QuotaSettingsCardInjected {
   /** Translator bound to the settings namespace. */
   t: (key: QoderSettingsKey, params?: Record<string, unknown>) => string
   /** Sign-in state per variant; a toggle is disabled when its variant is out. */
-  signedIn: () => { cn: boolean; global: boolean }
+  signedIn?: (() => { cn: boolean; global: boolean }) | undefined
   /** The bound scope over the `qoder-quota` namespace, when available. */
   scope?: SettingsScope<QuotaSection> | undefined
 }
@@ -140,7 +140,10 @@ function ToggleRow({ label, hint, checked, disabled, disabledHint, onToggle }: {
         aria-checked={checked}
         disabled={disabled}
         aria-label={label}
-        onClick={() => onToggle(!checked)}
+        onClick={() => {
+          if (disabled) return
+          onToggle(!checked)
+        }}
         style={{
           ...switchStyle,
           background: checked ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-bg-layer-3, rgba(127,127,127,0.2))',
@@ -192,12 +195,38 @@ export function QuotaSettingsContent({ t = key => key, scope, signedIn }: QuotaS
   }, [])
 
   if (projection.status === 'unavailable') return null
-  const reported = signedIn?.() ?? liveSignIn
+  const reported = signedIn?.()
+
+  const deriveSigned = (variant: 'cn' | 'global', variantId: 'qoder' | 'qoder-global'): boolean => {
+    if (reported !== undefined) {
+      return Boolean(reported[variant])
+    }
+    const currentStatus = quotaStatus(variantId)
+    if (currentStatus?.status === 'signed-out') {
+      return false
+    }
+    const live = liveSignIn[variant]
+    if (probe !== undefined) {
+      const probeResult = probe[variant]
+      if (!probeResult) {
+        return Boolean(live && currentStatus?.status === 'signed-in')
+      }
+      return Boolean(live)
+    }
+    return Boolean(live && currentStatus?.status === 'signed-in')
+  }
+
   const signed = {
-    cn: Boolean(reported.cn || liveSignIn.cn || probe?.cn),
-    global: Boolean(reported.global || liveSignIn.global || probe?.global),
+    cn: deriveSigned('cn', 'qoder'),
+    global: deriveSigned('global', 'qoder-global'),
   }
   const write = (field: Field, value: boolean | number): void => {
+    if (field === 'sidebarQuotaCN' && value === true && !signed.cn) {
+      return
+    }
+    if (field === 'sidebarQuotaGlobal' && value === true && !signed.global) {
+      return
+    }
     void scope?.set(field, value)
   }
   const minutes = Math.max(POLL_MIN_MS / 60_000, Math.round(projection.values.quotaPollMs / 60_000))
@@ -293,7 +322,7 @@ export function QuotaSettingsCard(props: QuotaSettingsCardProps): React.ReactNod
       </button>
       {open ? (
         <div style={cardBodyStyle}>
-          <QuotaSettingsContent t={t} scope={scope} signedIn={signedIn ?? (() => ({ cn: false, global: false }))} />
+          <QuotaSettingsContent t={t} scope={scope} signedIn={signedIn} />
         </div>
       ) : null}
     </li>
