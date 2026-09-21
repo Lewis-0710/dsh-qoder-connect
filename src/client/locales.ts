@@ -1,10 +1,14 @@
-﻿/** Plugin-card copy registered under the settings.qoder locale namespace. */
+/** Plugin-card copy registered under the settings.qoder locale namespace. */
 
 export const en = {
   title: 'Qoder',
   intro: 'Use the models from your Qoder (China) account directly in DSH — paste a Personal Access Token, no browser sign-in flow.',
   titleAI: 'Qoder Global',
   introAI: 'Use the models from your Qoder Global account directly in DSH — paste a Personal Access Token, no browser sign-in flow.',
+  unifiedTitle: 'Qoder',
+  unifiedIntro: 'Manage Qoder (China) and Qoder Global models, credentials, and sidebar quota displays.',
+  variantTabCN: 'China',
+  variantTabGlobal: 'Global',
   expand: 'Expand',
   collapse: 'Collapse',
   loading: 'Loading account…',
@@ -138,6 +142,10 @@ export const zh: Record<QoderSettingsKey, string> = {
   intro: '保存个人访问令牌（PAT）后，即可在 DSH 中直接使用 Qoder 国内版的模型。',
   titleAI: 'Qoder Global（国际版）',
   introAI: '保存个人访问令牌（PAT）后，即可在 DSH 中直接使用 Qoder Global 的模型。',
+  unifiedTitle: 'Qoder',
+  unifiedIntro: '统一管理 Qoder（国内版）与 Qoder Global（国际版）模型、凭证及侧栏额度展示。',
+  variantTabCN: '国内版',
+  variantTabGlobal: '国际版',
   expand: '展开',
   collapse: '收起',
   loading: '正在读取账号…',

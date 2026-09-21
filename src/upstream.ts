@@ -494,6 +494,9 @@ class ChunkEncoder {
           + (chunk.usage.cacheReadTokens ?? 0)
           + (chunk.usage.cacheWriteTokens ?? 0)
         const completion = chunk.usage.outputTokens
+        const cacheRead = chunk.usage.cacheReadTokens
+        const cacheWrite = chunk.usage.cacheWriteTokens
+        const reasoning = chunk.usage.reasoningTokens
         // The token counts are DISJOINT by contract (`inputTokens` excludes
         // cached input), so the OpenAI `prompt_tokens` total is the sum.
         return [this.frame({
@@ -502,6 +505,17 @@ class ChunkEncoder {
             prompt_tokens: prompt,
             completion_tokens: completion,
             total_tokens: chunk.usage.totalTokens ?? prompt + completion,
+            ...(cacheRead === undefined && cacheWrite === undefined ? {} : {
+              prompt_tokens_details: {
+                ...(cacheRead === undefined ? {} : { cached_tokens: cacheRead }),
+                ...(cacheWrite === undefined ? {} : { cache_write_tokens: cacheWrite }),
+              },
+            }),
+            ...(reasoning === undefined ? {} : {
+              completion_tokens_details: {
+                reasoning_tokens: reasoning,
+              },
+            }),
           },
         })]
       }

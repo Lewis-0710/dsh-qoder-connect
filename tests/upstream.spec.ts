@@ -407,9 +407,17 @@ describe('chatStream OpenAI re-serialization', () => {
     }])
 
     // The usage frame: prompt_tokens sums the disjoint input counters, and it
-    // carries no choice at all.
+    // carries prompt_tokens_details when cache counters are present.
     const usageFrame = chunkFrames.find(frame => frame.payload['usage'] !== undefined)
-    expect(usageFrame?.payload['usage']).toEqual({ prompt_tokens: 107, completion_tokens: 7, total_tokens: 114 })
+    expect(usageFrame?.payload['usage']).toEqual({
+      prompt_tokens: 107,
+      completion_tokens: 7,
+      total_tokens: 114,
+      prompt_tokens_details: {
+        cached_tokens: 5,
+        cache_write_tokens: 2,
+      },
+    })
     expect((usageFrame?.payload['choices'] as unknown[]).length).toBe(0)
 
     const finishFrame = chunkFrames[chunkFrames.length - 1]
@@ -417,16 +425,23 @@ describe('chatStream OpenAI re-serialization', () => {
       .toMatchObject({ delta: {}, finish_reason: 'tool_calls' })
   })
 
-  it('prefers an upstream-provided total_tokens when it carries one', async () => {
+  it('prefers an upstream-provided total_tokens and passes reasoning tokens details', async () => {
     const { client } = makeClient({
       chunks: [
-        { type: 'usage', usage: { inputTokens: 10, outputTokens: 3, totalTokens: 999 } },
+        { type: 'usage', usage: { inputTokens: 10, outputTokens: 3, totalTokens: 999, reasoningTokens: 2 } },
         { type: 'finish', reason: { kind: 'stop' } },
       ],
     })
     const { frames } = await streamOk(client, USER_BODY)
     const usage = frames.filter(frame => frame.kind === 'chunk').find(frame => 'usage' in frame.payload)?.payload?.['usage']
-    expect(usage).toEqual({ prompt_tokens: 10, completion_tokens: 3, total_tokens: 999 })
+    expect(usage).toEqual({
+      prompt_tokens: 10,
+      completion_tokens: 3,
+      total_tokens: 999,
+      completion_tokens_details: {
+        reasoning_tokens: 2,
+      },
+    })
   })
 
   it('maps finish kinds to OpenAI finish reasons', async () => {

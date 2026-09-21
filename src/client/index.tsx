@@ -133,24 +133,19 @@ export function apply(ctx: ClientContext): void {
     } catch (error: unknown) {
       console.error('[dsh-qoder-connect] quota settings scope unavailable (sidebar cards stay hidden):', error)
     }
+    // Unified Qoder plugin configuration card: merges sidebar quota settings,
+    // China variant, and Global variant into one single card titled "Qoder".
     ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
       name: 'settings.plugin.item',
-      key: 'qoder-quota',
+      key: 'qoder',
       priority: 50,
-      inject: (): QuotaSettingsCardInjected => ({ ...quotaSettingsInjected, scope: quotaScope }),
-    }, QuotaSettingsCard))
-
-    // 2 + 3. One card per variant, in QODER_CARD_VARIANTS order (CN first).
-    // Priorities place CN above Global (both below the quota-settings
-    // card's 50).
-    for (const [index, variant] of QODER_CARD_VARIANTS.entries()) {
-      ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
-        name: 'settings.plugin.item',
-        key: variant.id,
-        priority: 60 + index * 10,
-        inject: (): QoderPluginCardInjected => ({ t, variant }),
-      }, QoderPluginCard))
-    }
+      inject: (): QoderPluginCardInjected => ({
+        t,
+        scope: quotaScope,
+        signedIn: () => quotaSignInState(),
+        unified: true,
+      }),
+    }, QoderPluginCard))
 
     // Sidebar quota cards + the dashboard they open. Two registrations, one
     // navigation entry — commandcode's pattern: the layout's keyed `main` slot
