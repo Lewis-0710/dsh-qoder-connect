@@ -17,6 +17,7 @@ Configure only what you use: a variant with no saved PAT shows no model group an
 - **Two independent variants** — `qoder` (china) and `qoder-global` (global) keep separate credential files, routes and saved catalogs: a token minted on qoder.com does not work against the China deployment and vice versa.
 - **Three-tier model catalog (live → saved → fallback)** — the card states where the list on screen came from: *“Model list updated …”* (fetched now), *“Showing the saved model list from …”* (this account's last successful fetch, restored after a restart or a failed fetch), or *“Showing the built-in model list (not yet updated from Qoder)”* (the roster compiled into the plugin). The reason of the most recent failed fetch is shown too, and a *Refresh model list* button sits right there.
 - **One-toggle context window** — each variant card's *Context window* tab lists every model's capacity (the default and the largest declared window) and carries its own *“Use the largest declared context window”* preference (on by default): on, requests declare the maximum (e.g. Qwen3.8-Max at 1M); off, the default (200K). The two variants keep independent toggle state.
+- **Daily auto check-in & logs** — automatically checks in daily at 10:00 (UTC+8) to claim 100 Credits, with independent toggles and startup catch-up protection. The card features a dedicated *Check-in log* panel with audit trails, *Check in now*, *Refresh*, and *Clear logs* quick actions.
 - **Sidebar quota card + credit details** — the *“Qoder sidebar display”* card toggles a per-variant sidebar quota widget (off by default; each toggle needs its variant's PAT saved) with one shared refresh interval (default 5 min, minimum 1 min). Clicking the sidebar widget opens the *Qoder quota* panel: one row per credit package — *“Remaining / Total + bar | Expires”* — plus the cycle share and reset time. Click the same widget again to close; click the other to switch variants.
 - **Rate display `x<priceFactor>`** — each model name is suffixed with the upstream-reported price multiplier (e.g. `Some Model · x0.79`, free is `x0`), spelled `x<n>` from the catalog's `price_factor`. Display only — it never changes the request; models whose rate the upstream did not report simply show no suffix.
 
@@ -57,6 +58,12 @@ Each variant card's *Context window* tab lists capacities per model under the *�
 **International:**
 
 ![International context-window settings](assets/6.png)
+
+### Daily Auto Check-In & Check-In Log
+
+Enable daily automatic check-in in the settings card, and inspect check-in history logs, trigger manual check-in, or clear logs in the *Check-in log* tab:
+
+![Daily Auto Check-In & Check-In Log](assets/7.png)
 
 ## Install
 
@@ -109,6 +116,7 @@ Everything the plugin owns lives in one data directory: `<profile>/.dsh-qoder-co
 <profile>/.dsh-qoder-connect/
 ├── .qoder-auth.json              # China PAT ({version:2, pat, region, savedAt})
 ├── .qoder-global-auth.json       # Global PAT
+├── checkin-status.json           # check-in status and history logs
 └── state/
     ├── .qoder-catalog.json       # China per-account saved catalog
     ├── .qoder-global-catalog.json
