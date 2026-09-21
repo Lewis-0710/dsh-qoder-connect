@@ -57,9 +57,17 @@ function parseEnvelope(rawData: string): QoderSseEnvelope {
     throw malformed('Qoder SSE envelope has an invalid status code.')
   }
   if (envelope.statusCodeValue !== undefined && envelope.statusCodeValue !== 200) {
+    const status = envelope.statusCodeValue
+    // Forward the envelope body into the reported message. Qoder answers a
+    // rejected chat with a 200 SSE whose first envelope carries the failure,
+    // and that body is where the real reason lives (quota exhausted, region
+    // permission, risk control, ...). Dropping it left every such rejection
+    // reading as a bare "invalid API key" with nothing to act on.
     throw qoderHttpError(
-      `Qoder service returned upstream error status ${envelope.statusCodeValue}.`,
-      { status: envelope.statusCodeValue },
+      envelope.body
+        ? `Qoder service returned upstream error status ${status}: ${envelope.body}`
+        : `Qoder service returned upstream error status ${status}.`,
+      { status },
     )
   }
   if (envelope.body !== undefined && typeof envelope.body !== 'string') {

@@ -11,7 +11,11 @@
  *
  *     [icon] qoder · jobToken 已自动刷新（旧令牌被上游拒绝，已自动重换并恢复）
  *
- * The host half alone produces this row; without a client renderer the title
+ * and its failure mirror, printed when the heal ran and still lost:
+ *
+ *     [icon] qoder · jobToken 已重换但仍被上游拒绝（自愈未恢复）
+ *
+ * The host half alone produces these rows; without a client renderer the title
  * is the recorded name, which is why it is the ASCII `qoder`.
  *
  * @module dsh-qoder-connect/job-token-hint
@@ -72,24 +76,53 @@ export function emitJobTokenHint(at: number, text: string): void {
   const agent = lastRunningAgent
   if (agent?.session === undefined) return
   lastRefreshAt.set(String(agent.id), at)
+  appendHintRow(agent, 'success', text)
+}
+
+/**
+ * Print the failed-heal row into the conversation whose request triggered it.
+ *
+ * The mirror of {@link emitJobTokenHint}: the self-heal ran, exchanged a fresh
+ * job token, retried, and the upstream still refused. Without this row that
+ * outcome was silent — the user saw only the resulting authorization failure
+ * and could not tell that recovery had already been attempted and lost.
+ *
+ * Rate limited by the transport (once per unresolved outage), not here: this
+ * module stays a pure printer so the dedupe policy lives with the state that
+ * knows when an outage ends.
+ *
+ * @param at - When the failed heal was recorded.
+ * @param text - The row's summary line.
+ */
+export function emitJobTokenRefreshFailedHint(at: number, text: string): void {
+  const agent = lastRunningAgent
+  if (agent?.session === undefined) return
+  appendHintRow(agent, 'error', text)
+}
+
+/** Append one log-only command pair carrying `text` as its outcome. */
+function appendHintRow(agent: HintAgent, kind: 'success' | 'error', text: string): void {
+  const session = agent.session
+  if (session === undefined) return
   const commandId = `cmd-qoder-hint-${Date.now().toString(36)}-${++hintSeq}`
   try {
     // The official pairing: `command/run` opens the row, `command/done` carries
     // its summary. Both are log-only events, so no turn is opened and no
-    // model-facing state changes.
-    agent.session.append('command/run', {
+    // model-facing state changes. `error` renders the row as a failure, which
+    // is what an exhausted heal is.
+    session.append('command/run', {
       commandId,
       name: JOB_TOKEN_HINT_NAME,
       source: { kind: 'user' },
     })
-    agent.session.append('command/done', {
+    session.append('command/done', {
       commandId,
-      kind: 'success',
+      kind,
       text,
     })
   } catch {
-    // The row reports a recovery that already happened; failing to print it is
-    // diagnostics-grade and must never surface as a chat failure.
+    // The row reports a heal that already happened (or already failed); failing
+    // to print it is diagnostics-grade and must never surface as a chat failure.
   }
 }
 

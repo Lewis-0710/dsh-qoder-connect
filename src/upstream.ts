@@ -490,18 +490,36 @@ class ChunkEncoder {
         return [this.frame({ choices: [{ index: 0, delta: { tool_calls: [call] }, finish_reason: null }] })]
       }
       case 'usage': {
+        const cacheRead = chunk.usage.cacheReadTokens
+        const cacheWrite = chunk.usage.cacheWriteTokens
         const prompt = chunk.usage.inputTokens
-          + (chunk.usage.cacheReadTokens ?? 0)
-          + (chunk.usage.cacheWriteTokens ?? 0)
+          + (cacheRead ?? 0)
+          + (cacheWrite ?? 0)
         const completion = chunk.usage.outputTokens
         // The token counts are DISJOINT by contract (`inputTokens` excludes
         // cached input), so the OpenAI `prompt_tokens` total is the sum.
+        //
+        // `prompt_tokens_details` MUST ride back out with it: the harness
+        // reads the cache-hit share off `prompt_tokens_details.cached_tokens`,
+        // so a usage frame that carries only the three aggregate counters
+        // silently reports every cached token as a miss (cache hit pinned to
+        // 0% however warm the upstream prefix cache actually was). Emit the
+        // details object only when the transport reported at least one of the
+        // two cache counters, so requests that never saw cache fields keep the
+        // exact same frame shape as before.
+        const details = cacheRead === undefined && cacheWrite === undefined
+          ? undefined
+          : {
+              ...(cacheRead === undefined ? {} : { cached_tokens: cacheRead }),
+              ...(cacheWrite === undefined ? {} : { cache_write_tokens: cacheWrite }),
+            }
         return [this.frame({
           choices: [],
           usage: {
             prompt_tokens: prompt,
             completion_tokens: completion,
             total_tokens: chunk.usage.totalTokens ?? prompt + completion,
+            ...(details === undefined ? {} : { prompt_tokens_details: details }),
           },
         })]
       }

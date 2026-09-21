@@ -1,6 +1,6 @@
 /** Deep module owning all communication with Qoder. */
 
-import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
+import { LlmError, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import { QoderAuthService } from './auth.ts'
 import type { QoderCatalogModel } from '../catalog.ts'
@@ -25,6 +25,19 @@ import type { QoderWireMessage } from './wire/wire-types.ts'
 
 export const defaultStreamIdleTimeoutMs = 5 * 60 * 1000
 
+/**
+ * How long a rotated-token notice may wait for an accepting chat.
+ *
+ * The heal's own retry can lose a race with a transient fault and be rescued
+ * by a later attempt, so the notice is deferred until some chat is accepted.
+ * That deferral has to be bounded: an unbounded one let a rotation from
+ * minutes earlier surface as a fresh-looking row whose timestamp named a
+ * moment the user could not connect to the row appearing now. Five minutes
+ * comfortably covers the host's own retry cycle (its backoff caps at 10s)
+ * while keeping the row adjacent to the event it describes.
+ */
+const jobTokenNoticeMaxAgeMs = 5 * 60 * 1000
+
 function aborted(message: string): QoderLlmError {
   return new QoderLlmError(message, 'ABORTED')
 }
@@ -44,6 +57,7 @@ export class DefaultQoderTransport implements QoderTransport {
   private readonly imageUploader: QoderImageUploader
   private readonly preserveThinking: boolean | undefined
   private readonly onJobTokenRefreshed: QoderTransportOptions['onJobTokenRefreshed']
+  private readonly onJobTokenRefreshFailed: QoderTransportOptions['onJobTokenRefreshFailed']
   /**
    * Set when the self-heal exchanged a fresh job token, cleared when a chat
    * afterwards succeeds. The notice reports "the token was rotated because the
@@ -52,6 +66,16 @@ export class DefaultQoderTransport implements QoderTransport {
    * transient upstream timeout and be rescued by a later attempt.
    */
   private pendingRefreshAt: number | undefined
+  /**
+   * Whether the current unresolved heal failure has already been reported.
+   *
+   * One upstream rejection can outlive many host-level retries (an observed
+   * storm ran 59 of them across 75 steps), and the transport re-heals inside
+   * every one of them. Without this latch the failure notice would print once
+   * per retry; with it, the user is told once per outage. Cleared as soon as
+   * any chat is accepted, so the next outage announces itself again.
+   */
+  private refreshFailureAnnounced = false
 
   constructor(options: QoderTransportOptions) {
     this.region = options.region
@@ -64,6 +88,7 @@ export class DefaultQoderTransport implements QoderTransport {
     this.attachments = options.attachments
     this.preserveThinking = options.preserveThinking
     this.onJobTokenRefreshed = options.onJobTokenRefreshed
+    this.onJobTokenRefreshFailed = options.onJobTokenRefreshFailed
     this.auth = new QoderAuthService({
       fetch: this.fetchImpl,
       logger: this.logger,
@@ -106,8 +131,38 @@ export class DefaultQoderTransport implements QoderTransport {
     if (this.pendingRefreshAt === undefined) return
     const at = this.pendingRefreshAt
     this.pendingRefreshAt = undefined
+    // A rotation whose acceptance took this long is no longer news. Printing
+    // it would drop a row into the conversation long after the fact, and its
+    // timestamp would name a moment the user has no reason to connect to now —
+    // which reads exactly like a clock bug (observed: a 16:56 rotation
+    // reported at 17:47). Dropping it keeps the notice meaningful.
+    if (Date.now() - at > jobTokenNoticeMaxAgeMs) return
     this.logger?.warn?.('[Qoder Stream] Job token was auto-refreshed after an upstream rejection; the chat has recovered')
     this.onJobTokenRefreshed?.({ region: this.region, at })
+  }
+
+  /**
+   * Drop a pending rotation notice whose heal did not rescue anything.
+   *
+   * The heal's own retry was rejected too, so "the rotation fixed it" is not
+   * what happened. Leaving the notice pending made a LATER, unrelated chat
+   * acceptance flush it — printing a success row that contradicts the failure
+   * row already shown, stamped with the old rotation time.
+   */
+  private discardPendingRefreshNotice(): void {
+    this.pendingRefreshAt = undefined
+  }
+
+  /**
+   * Note that the upstream accepted a chat, ending any unresolved heal failure.
+   *
+   * `streamChat` calls this the moment its first chunk arrives — the only point
+   * at which "the credential was accepted" is actually known. A rejected chat
+   * throws before that, so this never fires on a failing attempt.
+   */
+  private onChatAccepted(): void {
+    this.refreshFailureAnnounced = false
+    this.flushPendingRefreshNotice()
   }
 
   async discoverModels(signal?: AbortSignal): Promise<readonly QoderCatalogModel[]> {
@@ -207,7 +262,7 @@ export class DefaultQoderTransport implements QoderTransport {
       // A pending notice from an earlier heal is reported as soon as this
       // request is accepted (see `streamChat`).
       yield* this.streamChat(options, model, chatCredentials, messages, () => {
-        this.flushPendingRefreshNotice()
+        this.onChatAccepted()
       })
       return
     } catch (error: unknown) {
@@ -238,7 +293,7 @@ export class DefaultQoderTransport implements QoderTransport {
       this.pendingRefreshAt = Date.now()
       try {
         yield* this.streamChat(options, model, refreshed, messages, () => {
-          this.flushPendingRefreshNotice()
+          this.onChatAccepted()
         })
         return
       } catch (error: unknown) {
@@ -261,6 +316,29 @@ export class DefaultQoderTransport implements QoderTransport {
     }
     // Both paced rounds exhausted on authorization rejections: the honest
     // answer is the last rejection, not a silently empty stream.
+    //
+    // The rotation did NOT rescue this chat, so the deferred success notice it
+    // would otherwise have qualified for is void. Dropping it here is what
+    // stops a later, unrelated chat acceptance from printing "已自动重换并恢复"
+    // with a stale rotation time — the row that made the notice look broken.
+    this.discardPendingRefreshNotice()
+    // Report the failed heal once per outage. The success notice covers "the
+    // rotation rescued the chat"; without this, a rejection the rotation could
+    // NOT rescue was announced nowhere at all, and the user was left reading a
+    // bare authorization failure with no hint that recovery had been attempted.
+    if (!this.refreshFailureAnnounced) {
+      this.refreshFailureAnnounced = true
+      this.logger?.warn?.('[Qoder Stream] Job token refresh did not recover the chat; the upstream still rejects it', {
+        status: lastRejection instanceof LlmError ? lastRejection.failure.status : undefined,
+      })
+      this.onJobTokenRefreshFailed?.({
+        region: this.region,
+        at: Date.now(),
+        ...(lastRejection instanceof LlmError && lastRejection.failure.status !== undefined
+          ? { status: lastRejection.failure.status }
+          : {}),
+      })
+    }
     throw lastRejection
   }
 }

@@ -406,10 +406,15 @@ describe('chatStream OpenAI re-serialization', () => {
       index: 1, id: 'call-b', type: 'function', function: { name: 'other', arguments: '{}' },
     }])
 
-    // The usage frame: prompt_tokens sums the disjoint input counters, and it
-    // carries no choice at all.
+    // The usage frame: prompt_tokens sums the disjoint input counters, the
+    // cache counters ride back out as `prompt_tokens_details` (the harness
+    // reads the cache-hit share from there; dropping it pins cache hit to 0%),
+    // and it carries no choice at all.
     const usageFrame = chunkFrames.find(frame => frame.payload['usage'] !== undefined)
-    expect(usageFrame?.payload['usage']).toEqual({ prompt_tokens: 107, completion_tokens: 7, total_tokens: 114 })
+    expect(usageFrame?.payload['usage']).toEqual({
+      prompt_tokens: 107, completion_tokens: 7, total_tokens: 114,
+      prompt_tokens_details: { cached_tokens: 5, cache_write_tokens: 2 },
+    })
     expect((usageFrame?.payload['choices'] as unknown[]).length).toBe(0)
 
     const finishFrame = chunkFrames[chunkFrames.length - 1]
@@ -427,6 +432,39 @@ describe('chatStream OpenAI re-serialization', () => {
     const { frames } = await streamOk(client, USER_BODY)
     const usage = frames.filter(frame => frame.kind === 'chunk').find(frame => 'usage' in frame.payload)?.payload?.['usage']
     expect(usage).toEqual({ prompt_tokens: 10, completion_tokens: 3, total_tokens: 999 })
+  })
+
+  it('omits prompt_tokens_details when the transport reported no cache counters', async () => {
+    // Backward-compat lock: a cold request that never saw cache fields keeps
+    // the exact pre-fix frame shape, so strict upstreams are not handed a
+    // details object full of zeroes.
+    const { client } = makeClient({
+      chunks: [
+        { type: 'usage', usage: { inputTokens: 10, outputTokens: 3 } },
+        { type: 'finish', reason: { kind: 'stop' } },
+      ],
+    })
+    const { frames } = await streamOk(client, USER_BODY)
+    const usage = frames.filter(frame => frame.kind === 'chunk').find(frame => 'usage' in frame.payload)?.payload?.['usage']
+    expect(usage).toEqual({ prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 })
+  })
+
+  it('carries a cache-read hit out as cached_tokens so the host can report it', async () => {
+    // Regression for issue #3: the transport read `prompt_tokens_details.cached_tokens`
+    // from Qoder but the re-serialized usage frame dropped it, so DSH's
+    // cache-hit statistic was pinned at 0% for every warm request.
+    const { client } = makeClient({
+      chunks: [
+        { type: 'usage', usage: { inputTokens: 40, cacheReadTokens: 960, outputTokens: 8 } },
+        { type: 'finish', reason: { kind: 'stop' } },
+      ],
+    })
+    const { frames } = await streamOk(client, USER_BODY)
+    const usage = frames.filter(frame => frame.kind === 'chunk').find(frame => 'usage' in frame.payload)?.payload?.['usage']
+    expect(usage).toEqual({
+      prompt_tokens: 1000, completion_tokens: 8, total_tokens: 1008,
+      prompt_tokens_details: { cached_tokens: 960 },
+    })
   })
 
   it('maps finish kinds to OpenAI finish reasons', async () => {

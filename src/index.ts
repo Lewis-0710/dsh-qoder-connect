@@ -34,7 +34,7 @@ import { createProbeKey, registerQoderProbeRoute } from './probe-route.ts'
 import type { QoderModelInfo } from './catalog.ts'
 import type { QoderWebCatalog, QoderWebProbeSection } from './status-paths.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
-import { emitJobTokenHint, installJobTokenHint } from './job-token-hint.ts'
+import { emitJobTokenHint, emitJobTokenRefreshFailedHint, installJobTokenHint } from './job-token-hint.ts'
 import { QODER_CONNECT_VERSION } from './version.ts'
 import { CHINA_VARIANT, GLOBAL_VARIANT, QODER_VARIANTS, type QoderVariant } from './variants.ts'
 
@@ -432,6 +432,19 @@ function jobTokenHintText(at: number): string {
   return `jobToken 已自动刷新（${time}）— 旧令牌被上游拒绝，已自动重换并恢复`
 }
 
+/**
+ * The failed-heal row's summary line.
+ *
+ * Deliberately does not name a cause: the upstream rejection that survived a
+ * fresh token is not necessarily an authorization problem at all, and the real
+ * reason travels in the failure message itself (see the SSE envelope body).
+ * Claiming "quota" or "revoked" here would be a guess presented as a finding.
+ */
+function jobTokenRefreshFailedHintText(at: number): string {
+  const time = new Date(at).toLocaleTimeString('zh-CN', { hour12: false })
+  return `jobToken 已重换但仍被上游拒绝（${time}）— 自愈未恢复，请查看上方错误详情`
+}
+
 /** Build one variant's stores, transport, and probe state. */
 function createVariantRuntime(
   ctx: Context,
@@ -458,6 +471,14 @@ function createVariantRuntime(
       // The visible channel: one line in the conversation that triggered the
       // refresh (the request this heal happened inside).
       emitJobTokenHint(info.at, jobTokenHintText(info.at))
+    },
+    onJobTokenRefreshFailed: info => {
+      // The heal ran and lost. Announced at most once per outage by the
+      // transport, so a long rejection storm prints one row, not one per retry.
+      ctx.logger.warn(
+        `dsh-qoder-connect: ${variant.displayName} job token refresh did not recover the chat (upstream status ${info.status ?? 'unknown'})`,
+      )
+      emitJobTokenRefreshFailedHint(info.at, jobTokenRefreshFailedHintText(info.at))
     },
   })
   // The attachment service may not exist when the client is constructed (and

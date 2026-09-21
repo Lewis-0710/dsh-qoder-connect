@@ -229,7 +229,24 @@ test('parseQoderSse preserves explicit upstream error statuses', async () => {
     error instanceof QoderLlmError
     && error.code === 'SERVER'
     && error.failure.status === 503
-    && error.message === 'Qoder service returned upstream error status 503.'
+    && error.message === 'Qoder service returned upstream error status 503: unavailable'
+  ))
+})
+
+test('parseQoderSse forwards the envelope body into the error message', async () => {
+  // A non-200 envelope's body carries the upstream's own reason (quota, region
+  // permission, risk control, ...). Discarding it left every such rejection
+  // reading as a bare "invalid API key", so the real cause was invisible.
+  const upstreamBody = JSON.stringify({ code: 403, message: 'quota exhausted for this model' })
+  await assert.rejects(async () => {
+    for await (const _chunk of parseQoderSse(streamOf([
+      `data: ${JSON.stringify({ statusCodeValue: 403, body: upstreamBody })}`,
+    ]))) continue
+  }, (error: Error) => (
+    error instanceof QoderLlmError
+    && error.code === 'AUTH'
+    && error.failure.status === 403
+    && error.message === `Qoder service returned upstream error status 403: ${upstreamBody}`
   ))
 })
 

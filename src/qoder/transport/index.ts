@@ -39,6 +39,16 @@ export interface QoderTransportOptions {
    * surfaces this as a visible "token auto-refreshed" notice on its card.
    */
   onJobTokenRefreshed?: (info: { region: QoderRegion; at: number }) => void
+  /**
+   * Called once per unresolved self-heal failure: the transport exchanged a
+   * fresh job token, retried the chat, and the upstream rejected it anyway.
+   *
+   * The success notice alone left this case silent — the user saw only a bare
+   * authorization failure with no sign that the plugin had already tried to
+   * recover. Reported at most once per outage (reset when a later chat is
+   * accepted), so a long rejection storm does not print a row per retry.
+   */
+  onJobTokenRefreshFailed?: (info: { region: QoderRegion; at: number; status?: number }) => void
 }
 
 export function createQoderTransport(options: QoderTransportOptions): QoderTransport {
