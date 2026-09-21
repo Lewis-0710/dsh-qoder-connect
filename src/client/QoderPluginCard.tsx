@@ -567,7 +567,18 @@ function formatTokens(tokens: number): string {
   return String(tokens)
 }
 
-function CheckInLogTable({ logs = [], t }: {
+function CheckInLogTable({
+  logs = [],
+  t,
+  onCheckIn,
+  onRefresh,
+  onClear,
+  busy,
+  checkingIn,
+  clearing,
+  disabled,
+  notice,
+}: {
   logs?: readonly {
     id: string
     date: string
@@ -577,52 +588,90 @@ function CheckInLogTable({ logs = [], t }: {
     message?: string | undefined
   }[] | undefined
   t: QoderPluginCardInjected['t']
+  onCheckIn?: () => void
+  onRefresh?: () => void
+  onClear?: () => void
+  busy?: boolean
+  checkingIn?: boolean
+  clearing?: boolean
+  disabled?: boolean
+  notice?: string | undefined
 }): React.ReactNode {
-  if (!logs || logs.length === 0) {
-    return <p style={descriptionStyle}>{t('checkInLogEmpty')}</p>
-  }
   return (
     <div style={quotaListStyle}>
-      <h3 style={quotaTitleStyle}>{t('tabCheckIn')}</h3>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <div style={{ display: 'flex', borderBottom: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.15))', paddingBottom: 6, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }}>
-          <span style={{ flex: 2 }}>{t('checkInLogTime')}</span>
-          <span style={{ flex: 3 }}>{t('checkInLogResult')}</span>
-          <span style={{ flex: 1, textAlign: 'right' }}>{t('checkInLogAmount')}</span>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+        <h3 style={quotaTitleStyle}>{t('tabCheckIn')}</h3>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button
+            type="button"
+            style={buttonStyle}
+            disabled={disabled || busy || checkingIn}
+            onClick={onCheckIn}
+          >
+            {checkingIn ? t('checkInChecking') : t('checkInNow')}
+          </button>
+          <button
+            type="button"
+            style={buttonStyle}
+            disabled={busy || checkingIn}
+            onClick={onRefresh}
+          >
+            {busy ? t('checkInRefreshing') : t('checkInRefresh')}
+          </button>
+          <button
+            type="button"
+            style={buttonStyle}
+            disabled={busy || clearing || !logs || logs.length === 0}
+            onClick={onClear}
+          >
+            {clearing ? t('checkInClearing') : t('checkInClear')}
+          </button>
         </div>
-        {logs.map(log => (
-          <div key={log.id} style={{ display: 'flex', alignItems: 'center', padding: '6px 0', fontSize: 13, borderBottom: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.08))' }}>
-            <span style={{ flex: 2, color: 'var(--dsw-alias-label-secondary)' }}>{formatTime(log.timestamp)}</span>
-            <span style={{ flex: 3, display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{
-                width: 6,
-                height: 6,
-                borderRadius: '50%',
-                flexShrink: 0,
-                background: log.status === 'claimed'
-                  ? 'var(--dsw-alias-status-success, #52c41a)'
-                  : log.status === 'already-claimed'
-                    ? 'var(--dsw-alias-status-info, #1890ff)'
-                    : log.status === 'no-campaign'
-                      ? 'var(--dsw-alias-label-tertiary, #999)'
-                      : 'var(--dsw-alias-status-error, #f5222d)',
-              }} />
-              <span>
-                {log.status === 'claimed'
-                  ? t('autoCheckInStatusClaimed', { amount: log.amount ?? 100 })
-                  : log.status === 'already-claimed'
-                    ? t('autoCheckInStatusAlready')
-                    : log.status === 'no-campaign'
-                      ? t('autoCheckInStatusNoCampaign')
-                      : t('autoCheckInStatusError', { message: log.message ?? '' })}
-              </span>
-            </span>
-            <span style={{ flex: 1, textAlign: 'right', fontWeight: 600, color: log.amount ? 'var(--dsw-alias-brand-primary)' : 'inherit' }}>
-              {log.amount ? `+${log.amount}` : '-'}
-            </span>
-          </div>
-        ))}
       </div>
+      {notice === undefined ? null : <p style={bodyStyle}>{notice}</p>}
+      {!logs || logs.length === 0 ? (
+        <p style={descriptionStyle}>{t('checkInLogEmpty')}</p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ display: 'flex', borderBottom: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.15))', paddingBottom: 6, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }}>
+            <span style={{ flex: 2 }}>{t('checkInLogTime')}</span>
+            <span style={{ flex: 3 }}>{t('checkInLogResult')}</span>
+            <span style={{ flex: 1, textAlign: 'right' }}>{t('checkInLogAmount')}</span>
+          </div>
+          {logs.map(log => (
+            <div key={log.id} style={{ display: 'flex', alignItems: 'center', padding: '6px 0', fontSize: 13, borderBottom: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.08))' }}>
+              <span style={{ flex: 2, color: 'var(--dsw-alias-label-secondary)' }}>{formatTime(log.timestamp)}</span>
+              <span style={{ flex: 3, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: '50%',
+                  flexShrink: 0,
+                  background: log.status === 'claimed'
+                    ? 'var(--dsw-alias-status-success, #52c41a)'
+                    : log.status === 'already-claimed'
+                      ? 'var(--dsw-alias-status-info, #1890ff)'
+                      : log.status === 'no-campaign'
+                        ? 'var(--dsw-alias-label-tertiary, #999)'
+                        : 'var(--dsw-alias-status-error, #f5222d)',
+                }} />
+                <span>
+                  {log.status === 'claimed'
+                    ? t('autoCheckInStatusClaimed', { amount: log.amount ?? 100 })
+                    : log.status === 'already-claimed'
+                      ? t('autoCheckInStatusAlready')
+                      : log.status === 'no-campaign'
+                        ? t('autoCheckInStatusNoCampaign')
+                        : t('autoCheckInStatusError', { message: log.message ?? '' })}
+                </span>
+              </span>
+              <span style={{ flex: 1, textAlign: 'right', fontWeight: 600, color: log.amount ? 'var(--dsw-alias-brand-primary)' : 'inherit' }}>
+                {log.amount ? `+${log.amount}` : '-'}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -653,6 +702,9 @@ export function QoderPluginCard(props: QoderPluginCardProps) {
   const [patNotice, setPatNotice] = useState<string>()
   const patInput = useRef<HTMLInputElement>(null)
   const [tab, setTab] = useState<'status' | 'context' | 'details' | 'checkin'>('status')
+  const [checkingIn, setCheckingIn] = useState(false)
+  const [clearingLogs, setClearingLogs] = useState(false)
+  const [checkInNotice, setCheckInNotice] = useState<string>()
   const mounted = useRef(true)
   const readSeq = useRef(0)
   const manualControllers = useRef(new Set<AbortController>())
@@ -772,6 +824,76 @@ export function QoderPluginCard(props: QoderPluginCardProps) {
       return
     } finally {
       if (mounted.current) setBusy(false)
+    }
+    try {
+      await refresh(controller.signal)
+    } finally {
+      manualControllers.current.delete(controller)
+    }
+  }, [currentVariant.probePath, refresh, status, t, trackController])
+
+  const manualCheckIn = useCallback(async (): Promise<void> => {
+    const key = status?.status === 'signed-in' ? status.probeKey : undefined
+    if (key === undefined) return
+    setCheckingIn(true)
+    setCheckInNotice(undefined)
+    const controller = trackController()
+    try {
+      const response = await fetch(currentVariant.probePath, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Qoder-Probe-Key': key },
+        credentials: 'same-origin',
+        signal: controller.signal,
+        body: JSON.stringify({ action: 'checkin' } satisfies QoderProbeAction),
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const result = await response.json() as { state?: string; amount?: number; reason?: string }
+      if (result.state === 'claimed') {
+        setCheckInNotice(t('autoCheckInStatusClaimed', { amount: result.amount ?? 100 }))
+      } else if (result.state === 'already-claimed') {
+        setCheckInNotice(t('autoCheckInStatusAlready'))
+      } else if (result.state === 'no-campaign') {
+        setCheckInNotice(t('autoCheckInStatusNoCampaign'))
+      } else if (result.reason) {
+        setCheckInNotice(t('autoCheckInStatusError', { message: result.reason }))
+      }
+    } catch (error: unknown) {
+      if (mounted.current && controller.signal.aborted !== true) {
+        setCheckInNotice(error instanceof Error ? error.message : t('requestFailed'))
+      }
+    } finally {
+      manualControllers.current.delete(controller)
+      if (mounted.current) setCheckingIn(false)
+    }
+    try {
+      await refresh(controller.signal)
+    } finally {
+      manualControllers.current.delete(controller)
+    }
+  }, [currentVariant.probePath, refresh, status, t, trackController])
+
+  const clearCheckInLogs = useCallback(async (): Promise<void> => {
+    const key = status?.status === 'signed-in' ? status.probeKey : undefined
+    if (key === undefined) return
+    setClearingLogs(true)
+    setCheckInNotice(undefined)
+    const controller = trackController()
+    try {
+      const response = await fetch(currentVariant.probePath, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Qoder-Probe-Key': key },
+        credentials: 'same-origin',
+        signal: controller.signal,
+        body: JSON.stringify({ action: 'clear-checkin-logs' } satisfies QoderProbeAction),
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    } catch (error: unknown) {
+      if (mounted.current && controller.signal.aborted !== true) {
+        setCheckInNotice(error instanceof Error ? error.message : t('requestFailed'))
+      }
+    } finally {
+      manualControllers.current.delete(controller)
+      if (mounted.current) setClearingLogs(false)
     }
     try {
       await refresh(controller.signal)
@@ -1128,28 +1250,20 @@ export function QoderPluginCard(props: QoderPluginCardProps) {
                 {status.catalog?.error === undefined
                   ? null
                   : <p style={errorStyle}>{t('catalogError', { message: status.catalog.error })}</p>}
-                {(() => {
-                  const hasCheckInLogs = status?.status === 'signed-in' && (status.checkIn?.logs?.length ?? 0) > 0
-                  const availableTabs: readonly ('status' | 'context' | 'details' | 'checkin')[] = hasCheckInLogs
-                    ? (['status', 'context', 'details', 'checkin'] as const)
-                    : (['status', 'context', 'details'] as const)
-                  return (
-                    <div role="tablist" style={tabBarStyle}>
-                      {availableTabs.map(id => (
-                        <button
-                          key={id}
-                          type="button"
-                          role="tab"
-                          aria-selected={tab === id}
-                          onClick={() => { setTab(id) }}
-                          style={{ ...tabStyle, ...(tab === id ? tabActiveStyle : {}) }}
-                        >
-                          {t(id === 'status' ? 'tabStatus' : id === 'context' ? 'tabContext' : id === 'details' ? 'tabDetails' : 'tabCheckIn')}
-                        </button>
-                      ))}
-                    </div>
-                  )
-                })()}
+                <div role="tablist" style={tabBarStyle}>
+                  {(['status', 'context', 'details', 'checkin'] as const).map(id => (
+                    <button
+                      key={id}
+                      type="button"
+                      role="tab"
+                      aria-selected={tab === id}
+                      onClick={() => { setTab(id) }}
+                      style={{ ...tabStyle, ...(tab === id ? tabActiveStyle : {}) }}
+                    >
+                      {t(id === 'status' ? 'tabStatus' : id === 'context' ? 'tabContext' : id === 'details' ? 'tabDetails' : 'tabCheckIn')}
+                    </button>
+                  ))}
+                </div>
 
                 {tab === 'status' ? (
                   <div style={tabPanelStyle}>
@@ -1204,7 +1318,18 @@ export function QoderPluginCard(props: QoderPluginCardProps) {
                   </div>
                 ) : (
                   <div style={tabPanelStyle}>
-                    <CheckInLogTable logs={status.checkIn?.logs} t={t} />
+                    <CheckInLogTable
+                      logs={status.checkIn?.logs}
+                      t={t}
+                      busy={busy}
+                      checkingIn={checkingIn}
+                      clearing={clearingLogs}
+                      disabled={status.status !== 'signed-in'}
+                      {...checkInNotice === undefined ? {} : { notice: checkInNotice }}
+                      onCheckIn={() => { void manualCheckIn() }}
+                      onRefresh={() => { void manualRefresh() }}
+                      onClear={() => { void clearCheckInLogs() }}
+                    />
                   </div>
                 )}
               </>

@@ -492,5 +492,13 @@ describe('Unified Qoder Plugin Card', () => {
     // Verify check-in log entries rendered
     const amounts = view!.root.findAll(n => n.children.includes('+100'))
     expect(amounts.length).toBeGreaterThanOrEqual(1)
+
+    // Verify action buttons exist in check-in log panel (check in now, refresh, clear)
+    const checkInBtn = view!.root.findAll(n => n.children.includes(en.checkInNow))
+    expect(checkInBtn.length).toBeGreaterThanOrEqual(1)
+    const refreshBtn = view!.root.findAll(n => n.children.includes(en.checkInRefresh))
+    expect(refreshBtn.length).toBeGreaterThanOrEqual(1)
+    const clearBtn = view!.root.findAll(n => n.children.includes(en.checkInClear))
+    expect(clearBtn.length).toBeGreaterThanOrEqual(1)
   })
 })

@@ -141,7 +141,7 @@ interface QoderProbeAction {
    * All are writes, which is why they share this route's in-process key
    * and loopback guards rather than the read-only status GET.
    */
-  action: 'probe' | 'clear' | 'refresh' | 'set-maximum-context-window';
+  action: 'probe' | 'clear' | 'refresh' | 'set-maximum-context-window' | 'clear-checkin-logs' | 'checkin';
   /** Target model id; required for `probe`. */
   model?: string;
   /** Requested value for `set-maximum-context-window`. */

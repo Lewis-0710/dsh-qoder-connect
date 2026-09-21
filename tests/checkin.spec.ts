@@ -197,6 +197,7 @@ describe('CheckInScheduler', () => {
     const store: CheckInStatusStore = {
       read: (id) => storeRecords[id],
       write: (id, record) => { storeRecords[id] = record },
+      clearLogs: (id) => { if (storeRecords[id]) storeRecords[id].logs = [] },
     }
 
     const mockService = {
@@ -241,6 +242,7 @@ describe('CheckInScheduler', () => {
     const records: Record<string, CheckInRecord> = {}
     const store: CheckInStatusStore = {
       read: (id) => records[id],
+      clearLogs: (id) => { if (records[id]) records[id].logs = [] },
       write: (id, record) => {
         const existing = records[id]?.logs ?? []
         const newLog = {

@@ -34,6 +34,7 @@ export interface CheckInRecord {
 export interface CheckInStatusStore {
   read(variantId: string): CheckInRecord | undefined
   write(variantId: string, record: CheckInRecord): void
+  clearLogs(variantId: string): void
 }
 
 export class JsonFileCheckInStore implements CheckInStatusStore {
@@ -55,6 +56,22 @@ export class JsonFileCheckInStore implements CheckInStatusStore {
 
   read(variantId: string): CheckInRecord | undefined {
     return this.readAll()[variantId]
+  }
+
+  clearLogs(variantId: string): void {
+    try {
+      const all = this.readAll()
+      if (all[variantId]) {
+        all[variantId] = {
+          ...all[variantId],
+          logs: [],
+        }
+        mkdirSync(dirname(this.filePath), { recursive: true })
+        writeFileSync(this.filePath, JSON.stringify(all, null, 2), 'utf-8')
+      }
+    } catch {
+      // Best-effort persistence
+    }
   }
 
   write(variantId: string, record: CheckInRecord): void {

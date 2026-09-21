@@ -198,6 +198,28 @@ describe('probe control route', () => {
     expect(refused.body['error']).toBe('context-window-setting-not-supported')
   })
 
+  it('runs checkin and clear-checkin-logs actions when provided', async () => {
+    let cleared = false
+    let checkedIn = false
+    const { origin, key } = await mount({
+      checkIn: async () => {
+        checkedIn = true
+        return { state: 'claimed', amount: 100 }
+      },
+      clearCheckInLogs: () => {
+        cleared = true
+      },
+    })
+
+    const checkInRes = await post(origin, { action: 'checkin' }, { 'x-qoder-probe-key': key })
+    expect(checkInRes).toMatchObject({ status: 200, body: { state: 'claimed', amount: 100 } })
+    expect(checkedIn).toBe(true)
+
+    const clearRes = await post(origin, { action: 'clear-checkin-logs' }, { 'x-qoder-probe-key': key })
+    expect(clearRes).toMatchObject({ status: 200, body: { state: 'cleared' } })
+    expect(cleared).toBe(true)
+  })
+
   it('mints a distinct key per call', () => {
     expect(createProbeKey()).not.toBe(createProbeKey())
   })

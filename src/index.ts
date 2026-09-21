@@ -959,6 +959,36 @@ export function apply(ctx: Context, config: Config): void {
             ? { state: 'refreshed', reason: `${runtime.catalog.current().length} models` }
             : { state: 'failed', reason: runtime.catalogError }
         },
+        clearCheckInLogs: () => {
+          checkInStore.clearLogs(runtime.variant.id)
+        },
+        checkIn: async () => {
+          let pat: string
+          try {
+            pat = await runtime.store.patPromise()
+          } catch {
+            return { state: 'failed', reason: 'No PAT available' }
+          }
+          const service = (runtime.transport as unknown as { checkInService: any }).checkInService
+          const result = await service.checkIn(pat)
+          if (result.status !== 'error') {
+            checkInStore.write(runtime.variant.id, {
+              lastDate: result.date,
+              lastAt: result.timestamp,
+              status: result.status,
+              ...result.amount === undefined ? {} : { amount: result.amount },
+              ...result.message === undefined ? {} : { message: result.message },
+            })
+            if (result.status === 'claimed') {
+              void runtime.client.fetchCredits().catch(() => undefined)
+            }
+          }
+          return {
+            state: result.status,
+            ...result.amount === undefined ? {} : { amount: result.amount },
+            ...result.message === undefined ? {} : { reason: result.message },
+          }
+        },
         ...runtime.variant.id === CHINA_VARIANT.id
           ? {
               setMaximumContextWindow: async enabled => {
