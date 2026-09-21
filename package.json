@@ -23,7 +23,7 @@
   "scripts": {
     "prepack": "npm run build",
     "build": "tsdown",
-    "test": "vitest run",
+    "test": "node -r ./tests/sandbox-shim.cjs ./node_modules/vitest/vitest.mjs run",
     "test:qoder": "node --test --test-isolation=none --experimental-strip-types tests/qoder/*.test.ts",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.client.json",
     "check": "pnpm run typecheck && pnpm run test && pnpm run test:qoder && pnpm run build"

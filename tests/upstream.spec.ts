@@ -412,8 +412,13 @@ describe('chatStream OpenAI re-serialization', () => {
     // and it carries no choice at all.
     const usageFrame = chunkFrames.find(frame => frame.payload['usage'] !== undefined)
     expect(usageFrame?.payload['usage']).toEqual({
-      prompt_tokens: 107, completion_tokens: 7, total_tokens: 114,
-      prompt_tokens_details: { cached_tokens: 5, cache_write_tokens: 2 },
+      prompt_tokens: 107,
+      completion_tokens: 7,
+      total_tokens: 114,
+      prompt_tokens_details: {
+        cached_tokens: 5,
+        cache_write_tokens: 2,
+      },
     })
     expect((usageFrame?.payload['choices'] as unknown[]).length).toBe(0)
 
@@ -422,16 +427,23 @@ describe('chatStream OpenAI re-serialization', () => {
       .toMatchObject({ delta: {}, finish_reason: 'tool_calls' })
   })
 
-  it('prefers an upstream-provided total_tokens when it carries one', async () => {
+  it('prefers an upstream-provided total_tokens and passes reasoning tokens details', async () => {
     const { client } = makeClient({
       chunks: [
-        { type: 'usage', usage: { inputTokens: 10, outputTokens: 3, totalTokens: 999 } },
+        { type: 'usage', usage: { inputTokens: 10, outputTokens: 3, totalTokens: 999, reasoningTokens: 2 } },
         { type: 'finish', reason: { kind: 'stop' } },
       ],
     })
     const { frames } = await streamOk(client, USER_BODY)
     const usage = frames.filter(frame => frame.kind === 'chunk').find(frame => 'usage' in frame.payload)?.payload?.['usage']
-    expect(usage).toEqual({ prompt_tokens: 10, completion_tokens: 3, total_tokens: 999 })
+    expect(usage).toEqual({
+      prompt_tokens: 10,
+      completion_tokens: 3,
+      total_tokens: 999,
+      completion_tokens_details: {
+        reasoning_tokens: 2,
+      },
+    })
   })
 
   it('omits prompt_tokens_details when the transport reported no cache counters', async () => {
@@ -464,6 +476,29 @@ describe('chatStream OpenAI re-serialization', () => {
     expect(usage).toEqual({
       prompt_tokens: 1000, completion_tokens: 8, total_tokens: 1008,
       prompt_tokens_details: { cached_tokens: 960 },
+    })
+  })
+
+  it('carries both cache details and reasoning tokens details when both are present', async () => {
+    const { client } = makeClient({
+      chunks: [
+        { type: 'usage', usage: { inputTokens: 40, cacheReadTokens: 960, cacheWriteTokens: 20, outputTokens: 8, reasoningTokens: 5 } },
+        { type: 'finish', reason: { kind: 'stop' } },
+      ],
+    })
+    const { frames } = await streamOk(client, USER_BODY)
+    const usage = frames.filter(frame => frame.kind === 'chunk').find(frame => 'usage' in frame.payload)?.payload?.['usage']
+    expect(usage).toEqual({
+      prompt_tokens: 1020,
+      completion_tokens: 8,
+      total_tokens: 1028,
+      prompt_tokens_details: {
+        cached_tokens: 960,
+        cache_write_tokens: 20,
+      },
+      completion_tokens_details: {
+        reasoning_tokens: 5,
+      },
     })
   })
 

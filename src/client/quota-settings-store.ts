@@ -25,7 +25,9 @@ export interface QuotaSignInState {
 
 let pollIntervalMs = 300_000
 const toggles = { cn: false, global: false }
+let togglesSnapshot: QuotaSignInState = { cn: false, global: false }
 const signIn: QuotaSignInState = { cn: false, global: false }
+let signInSnapshot: QuotaSignInState = { cn: false, global: false }
 let revision = 0
 const listeners = new Set<() => void>()
 
@@ -52,29 +54,32 @@ export function setQuotaToggles(cn: boolean, global: boolean): void {
   if (toggles.cn !== cn || toggles.global !== global) {
     toggles.cn = cn
     toggles.global = global
+    togglesSnapshot = { ...toggles }
     bump()
   }
 }
 
 /** Read the current toggles. */
 export function quotaToggles(): QuotaSignInState {
-  return { ...toggles }
+  return togglesSnapshot
 }
 
 /** Record a variant's sign-in state from any successful status poll. */
 export function noteQuotaSignIn(variantId: string, signedIn: boolean): void {
   if (variantId === 'qoder' && signIn.cn !== signedIn) {
     signIn.cn = signedIn
+    signInSnapshot = { ...signIn }
     bump()
   } else if (variantId === 'qoder-global' && signIn.global !== signedIn) {
     signIn.global = signedIn
+    signInSnapshot = { ...signIn }
     bump()
   }
 }
 
 /** Read the cached sign-in state. */
 export function quotaSignInState(): QuotaSignInState {
-  return { ...signIn }
+  return signInSnapshot
 }
 
 /** Subscribe to any flag change; returns the disposer. */

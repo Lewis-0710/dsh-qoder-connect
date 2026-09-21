@@ -71,22 +71,19 @@ function apply(ctx: any): void {
     } catch (error: unknown) {
       console.error('[dsh-qoder-connect] quota settings scope unavailable (sidebar cards stay hidden):', error)
     }
+    // Unified Qoder plugin configuration card: merges sidebar quota settings,
+    // China variant, and Global variant into one single card titled "Qoder".
     ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
       name: 'settings.plugin.item',
-      key: 'qoder-quota',
+      key: 'qoder',
       priority: 50,
-      inject: () => ({ ...quotaSettingsInjected, scope: quotaScope }),
+      inject: () => ({
+        t,
+        scope: quotaScope,
+        signedIn: () => ({ cn: false, global: false }),
+        unified: true,
+      }),
     }, Component))
-
-    // 2 + 3. One card per variant, in QODER_CARD_VARIANTS order (CN first).
-    for (const [index, variantId] of CARD_VARIANT_IDS.entries()) {
-      ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
-        name: 'settings.plugin.item',
-        key: variantId,
-        priority: 60 + index * 10,
-        inject: () => ({ t, variant: variantId }),
-      }, Component))
-    }
 
     // Dashboard internals stand-ins (see the note above).
     const QUOTA_PANEL_ID = 'qoder-quota-panel'
@@ -255,7 +252,7 @@ describe('client card fallback', () => {
     restore()
   })
 
-  it('keeps every card registered when the quota settings scope is missing', () => {
+  it('keeps unified card registered when the quota settings scope is missing', () => {
     const { errors, restore } = useErrorSpy()
     const { ctx, registerCalls } = fakeContext({ scopeBind: true })
 
@@ -263,11 +260,10 @@ describe('client card fallback', () => {
     // One inner catch, not the outer boundary: the cards still contribute.
     expect(errors).toHaveLength(1)
     expect(errors[0]).toContain('quota settings scope unavailable')
-    expect(registerCalls.filter(call => call['key'] === 'qoder-quota')).toHaveLength(1)
-    expect(registerCalls.map(call => call['key']).filter(key => key === 'qoder' || key === 'qoder-global')).toEqual(['qoder', 'qoder-global'])
+    expect(registerCalls.filter(call => call['key'] === 'qoder')).toHaveLength(1)
     // The scope is handed over as undefined, so the settings card renders its
     // toggles read-only rather than crashing on a missing service.
-    const settingsCard = registerCalls.find(call => call['key'] === 'qoder-quota') as unknown as { inject: () => { scope: unknown } }
+    const settingsCard = registerCalls.find(call => call['key'] === 'qoder') as unknown as { inject: () => { scope: unknown } }
     expect(settingsCard.inject().scope).toBeUndefined()
 
     restore()
@@ -299,20 +295,20 @@ describe('client card fallback', () => {
     restore()
   })
 
-  it('contributes both variant cards, the panel seat, and the probe seat', () => {
+  it('contributes unified card, the panel seat, and the probe seat', () => {
     const { errors, restore } = useErrorSpy()
     const { ctx, injections, registerCalls } = fakeContext()
 
     expect(() => apply(ctx)).not.toThrow()
     expect(errors).toEqual([])
-    expect(injections.filter(name => name === 'settings.plugin.item')).toHaveLength(3)
+    expect(injections.filter(name => name === 'settings.plugin.item')).toHaveLength(1)
     expect(injections).toContain('main')
     expect(injections).toContain('sidebar.footer.action')
     expect(injections).toContain('conversation.input.right')
 
     // The seats this plugin claims, by their Qoder keys and ids.
     const pluginKeys = registerCalls.flatMap(call => typeof call['key'] === 'string' ? [call['key']] : [])
-    expect(pluginKeys.sort()).toEqual(['qoder', 'qoder-global', 'qoder-quota', 'qoder-quota-panel'])
+    expect(pluginKeys.sort()).toEqual(['qoder', 'qoder-quota-panel'])
     const seatIds = registerCalls.flatMap(call => typeof call['id'] === 'string' ? [call['id']] : [])
     expect(seatIds.sort()).toEqual(['qoder-global-quota', 'qoder-probe', 'qoder-quota'])
     // The probe seat belongs to the international-or-not composer chrome this
@@ -361,7 +357,7 @@ describe('mirror stays verbatim with src/client/index.tsx', () => {
     // the mirror obligation warns about.
     const seats = [
       'settings.plugin.item', 'conversation.input.right', 'sidebar.footer.action',
-      'qoder-quota', 'qoder-global-quota', 'qoder-quota-panel', 'qoder-probe',
+      'qoder-global-quota', 'qoder-quota-panel', 'qoder-probe',
     ]
     for (const seat of seats) {
       expect(entrySource).toContain(seat)
