@@ -302,6 +302,21 @@ describe('Qoder Host settings integration', () => {
     expect(fieldsOf('qoder-global')).toEqual([...Qoder.GLOBAL_SECTION_KEYS])
     expect(fieldsOf('qoder-quota')).toEqual([...Qoder.QUOTA_SECTION_KEYS])
 
+    // Check model disabling via settings
+    await ctx.settings.update('qoder', { disabledModelsCN: ['big-context'] })
+    await vi.waitFor(async () => {
+      const modelsCN = (await ctx.llm.listModels('qoder')).map(m => m.id)
+      expect(modelsCN).not.toContain('big-context')
+      const modelsGlobal = (await ctx.llm.listModels('qoder-global')).map(m => m.id)
+      expect(modelsGlobal).toContain('big-context')
+    })
+
+    await ctx.settings.update('qoder', { disabledModelsCN: [] })
+    await vi.waitFor(async () => {
+      const modelsCN = (await ctx.llm.listModels('qoder')).map(m => m.id)
+      expect(modelsCN).toContain('big-context')
+    })
+
     // A write through one section must reach only THAT variant. The same live
     // roster is served to both arms, and each now carries its own maximum-window
     // preference, so the two toggles are independent observables: flipping the

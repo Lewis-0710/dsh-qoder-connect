@@ -108,11 +108,13 @@ export interface QoderProbeAction {
    * All are writes, which is why they share this route's in-process key
    * and loopback guards rather than the read-only status GET.
    */
-  action: 'probe' | 'clear' | 'refresh' | 'set-maximum-context-window' | 'clear-checkin-logs' | 'checkin'
+  action: 'probe' | 'clear' | 'refresh' | 'set-maximum-context-window' | 'clear-checkin-logs' | 'checkin' | 'set-models-enabled'
   /** Target model id; required for `probe`. */
   model?: string
-  /** Requested value for `set-maximum-context-window`. */
+  /** Requested value for `set-maximum-context-window` or `set-models-enabled`. */
   enabled?: boolean
+  /** Target model ids for `set-models-enabled` (supports single, batch, or all). */
+  models?: readonly string[]
 }
 
 /**
@@ -219,6 +221,8 @@ export type QoderWebStatus =
     probe?: QoderWebProbeSection
     /** Card preference selecting larger declared context windows. */
     useMaximumContextWindow?: boolean
+    /** Disabled model IDs (blacklist) for this variant. */
+    disabledModels?: readonly string[]
     /**
      * The last automatic job-token refresh the self-heal performed, epoch ms.
      * Absent when no refresh has happened in this process. The card renders

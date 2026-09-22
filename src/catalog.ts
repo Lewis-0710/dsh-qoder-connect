@@ -97,13 +97,21 @@ export class QoderCatalog {
   private useMaximumContextWindow = false
   /** Per-model window overrides (model id → tokens); an override wins over the preference. */
   private modelContextWindows: Readonly<Record<string, number>> = {}
+  /** Disabled model IDs (blacklist); disabled models are filtered out from current(). */
+  private disabledModels: ReadonlySet<string> = new Set()
 
   constructor(initial: readonly QoderModelInfo[] = FALLBACK_QODER_MODELS) {
     this.models = initial
   }
 
-  /** Current entries; empty while the variant has no usable credential. */
+  /** Current entries; empty while the variant has no usable credential, excluding disabled models. */
   current(): readonly QoderModelInfo[] {
+    if (!this.visible) return []
+    return this.all().filter(model => !this.disabledModels.has(model.id))
+  }
+
+  /** All configured entries including disabled ones; empty while the variant has no usable credential. */
+  all(): readonly QoderModelInfo[] {
     if (!this.visible) return []
     return this.models.map(model => {
       const override = this.modelContextWindows[model.id]
@@ -157,6 +165,24 @@ export class QoderCatalog {
     if (JSON.stringify(next) === JSON.stringify(this.modelContextWindows)) return false
     this.modelContextWindows = next
     return true
+  }
+
+  /**
+   * Replace the disabled model IDs wholesale. Returns whether the set
+   * changed, so the caller can skip an invalidation over an identical write.
+   */
+  setDisabledModels(disabledModels: readonly string[]): boolean {
+    const next = new Set(disabledModels)
+    if (next.size === this.disabledModels.size && [...next].every(id => this.disabledModels.has(id))) {
+      return false
+    }
+    this.disabledModels = next
+    return true
+  }
+
+  /** Current disabled model IDs. */
+  getDisabledModels(): readonly string[] {
+    return Array.from(this.disabledModels)
   }
 
   /**

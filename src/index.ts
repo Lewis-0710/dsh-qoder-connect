@@ -245,6 +245,10 @@ export interface Config {
   modelContextWindows?: Record<string, number>
   /** The China variant's per-model overrides; see {@link Config.modelContextWindows}. */
   modelContextWindowsCN?: Record<string, number>
+  /** Models disabled for the global variant (blacklist). */
+  disabledModels?: string[]
+  /** Models disabled for the China variant (blacklist). */
+  disabledModelsCN?: string[]
   /** Show the China variant's sidebar quota card. */
   sidebarQuotaCN?: boolean
   /** Show the global variant's sidebar quota card. */
@@ -281,6 +285,9 @@ const MAXIMUM_CONTEXT_WINDOW_CN_FIELD = z.boolean().default(true)
  */
 const MODEL_CONTEXT_WINDOWS_FIELD = z.dict(z.number().min(1), z.string())
   .description('Per-model context-window overrides for Qoder Global (model id → tokens)')
+/** Disabled models list (blacklist) */
+const DISABLED_MODELS_FIELD = z.array(z.string()).default([])
+  .description('Models hidden from the provider catalog and picker')
 /** Sidebar quota toggle (one per variant; both live on the shared quota card). */
 const QUOTA_TOGGLE_FIELD = z.boolean().default(false)
   .description('Show this variant’s remaining-credit card in the sidebar footer (off by default)')
@@ -342,12 +349,14 @@ const CHINA_SECTION: z<Config> = z.object({
   probeConsent: PROBE_CONSENT_FIELD,
   useMaximumContextWindowCN: MAXIMUM_CONTEXT_WINDOW_CN_FIELD,
   modelContextWindowsCN: MODEL_CONTEXT_WINDOWS_FIELD,
+  disabledModelsCN: DISABLED_MODELS_FIELD,
 })
 
 /** The global card's settings section and its context-window preferences. */
 const GLOBAL_SECTION: z<Config> = z.object({
   useMaximumContextWindow: MAXIMUM_CONTEXT_WINDOW_FIELD,
   modelContextWindows: MODEL_CONTEXT_WINDOWS_FIELD,
+  disabledModels: DISABLED_MODELS_FIELD,
 })
 
 /**
@@ -383,11 +392,13 @@ export const CN_SECTION_KEYS = [
   'probeConsent',
   'useMaximumContextWindowCN',
   'modelContextWindowsCN',
+  'disabledModelsCN',
 ] as const satisfies readonly (keyof Config)[]
 
 export const GLOBAL_SECTION_KEYS = [
   'useMaximumContextWindow',
   'modelContextWindows',
+  'disabledModels',
 ] as const satisfies readonly (keyof Config)[]
 
 export const QUOTA_SECTION_KEYS = [
@@ -592,9 +603,11 @@ function createVariantRuntime(
   const catalog = new QoderCatalog(fallback)
   if (variant.id !== CHINA_VARIANT.id) {
     catalog.setUseMaximumContextWindow(config.useMaximumContextWindow === true)
+    if (config.disabledModels !== undefined) catalog.setDisabledModels(config.disabledModels)
   } else {
     catalog.setUseMaximumContextWindow(config.useMaximumContextWindowCN === true)
     if (config.modelContextWindowsCN !== undefined) catalog.setModelContextWindows(config.modelContextWindowsCN)
+    if (config.disabledModelsCN !== undefined) catalog.setDisabledModels(config.disabledModelsCN)
   }
   // Start hidden: a variant must serve no models until a token has actually
   // been adopted, so a signed-out variant is empty rather than showing a roster
@@ -902,6 +915,8 @@ export function apply(ctx: Context, config: Config): void {
   const authKey = createAuthKey()
   let setMaximumContextWindow: ((enabled: boolean) => Promise<{ state: string; reason?: string }>) | undefined
   let setMaximumContextWindowCN: ((enabled: boolean) => Promise<{ state: string; reason?: string }>) | undefined
+  let setModelsEnabled: ((options: { models: readonly string[]; enabled: boolean }) => Promise<{ state: string; reason?: string }>) | undefined
+  let setModelsEnabledCN: ((options: { models: readonly string[]; enabled: boolean }) => Promise<{ state: string; reason?: string }>) | undefined
   /**
    * Point a variant at an account identity, invalidating whatever the previous
    * one left behind.
@@ -979,14 +994,20 @@ export function apply(ctx: Context, config: Config): void {
         path: runtime.variant.statusPath,
         store: runtime.store,
         client: runtime.client,
-        models: () => runtime.catalog.current(),
+        models: () => runtime.catalog.all(),
         catalog: () => catalogSection(runtime),
         probe: () => probeSection(runtime, current().probeConsent === true),
         probeKey,
         authKey,
         ...(runtime.variant.id === CHINA_VARIANT.id
-          ? { useMaximumContextWindow: () => current().useMaximumContextWindowCN === true }
-          : { useMaximumContextWindow: () => current().useMaximumContextWindow === true }),
+          ? {
+            useMaximumContextWindow: () => current().useMaximumContextWindowCN === true,
+            disabledModels: () => current().disabledModelsCN ?? [],
+          }
+          : {
+            useMaximumContextWindow: () => current().useMaximumContextWindow === true,
+            disabledModels: () => current().disabledModels ?? [],
+          }),
         jobTokenRefreshedAt: runtime.jobTokenRefreshedAt,
         checkIn: () => {
           const record = checkInStore.read(runtime.variant.id)
@@ -1099,11 +1120,19 @@ export function apply(ctx: Context, config: Config): void {
                 if (setMaximumContextWindowCN === undefined) return { state: 'failed', reason: 'settings are unavailable' }
                 return setMaximumContextWindowCN(enabled)
               },
+              setModelsEnabled: async opts => {
+                if (setModelsEnabledCN === undefined) return { state: 'failed', reason: 'settings are unavailable' }
+                return setModelsEnabledCN(opts)
+              },
             }
           : {
               setMaximumContextWindow: async enabled => {
                 if (setMaximumContextWindow === undefined) return { state: 'failed', reason: 'settings are unavailable' }
                 return setMaximumContextWindow(enabled)
+              },
+              setModelsEnabled: async opts => {
+                if (setModelsEnabled === undefined) return { state: 'failed', reason: 'settings are unavailable' }
+                return setModelsEnabled(opts)
               },
             },
       }, probeKey)
@@ -1135,7 +1164,7 @@ export function apply(ctx: Context, config: Config): void {
       ...pickFields(sources.global, GLOBAL_SECTION_KEYS),
       ...pickFields(sources.quota, QUOTA_SECTION_KEYS),
     })
-    const applyMaximumContextWindow = (next: Config): void => {
+    const applyCatalogSettings = (next: Config): void => {
       let changed = false
       for (const runtime of runtimes) {
         const isChina = runtime.variant.id === CHINA_VARIANT.id
@@ -1143,13 +1172,15 @@ export function apply(ctx: Context, config: Config): void {
         if (runtime.catalog.setUseMaximumContextWindow(preference === true)) changed = true
         const overrides = isChina ? next.modelContextWindowsCN : next.modelContextWindows
         if (overrides !== undefined && runtime.catalog.setModelContextWindows(overrides)) changed = true
+        const disabled = isChina ? next.disabledModelsCN : next.disabledModels
+        if (runtime.catalog.setDisabledModels(disabled ?? [])) changed = true
       }
       if (changed) {
         for (const runtime of runtimes) runtime.invalidate()
       }
     }
     const repointStores = (): void => {
-      applyMaximumContextWindow(merged())
+      applyCatalogSettings(merged())
     }
     settingsCtx.settings.installSection(ctx, QODER_SETTINGS_NS, CHINA_SECTION, config, {
       setSource(source) { sources.cn = source as () => Config; current = merged },
@@ -1186,6 +1217,24 @@ export function apply(ctx: Context, config: Config): void {
     }
     setMaximumContextWindowCN = async enabled => {
       await settingsCtx.settings.update(QODER_SETTINGS_NS, { useMaximumContextWindowCN: enabled })
+      return { state: 'updated' }
+    }
+    setModelsEnabled = async ({ models, enabled }) => {
+      const currentDisabled = new Set(sources.global().disabledModels ?? [])
+      for (const m of models) {
+        if (enabled) currentDisabled.delete(m)
+        else currentDisabled.add(m)
+      }
+      await settingsCtx.settings.update(QODER_GLOBAL_SETTINGS_NS, { disabledModels: Array.from(currentDisabled) })
+      return { state: 'updated' }
+    }
+    setModelsEnabledCN = async ({ models, enabled }) => {
+      const currentDisabled = new Set(sources.cn().disabledModelsCN ?? [])
+      for (const m of models) {
+        if (enabled) currentDisabled.delete(m)
+        else currentDisabled.add(m)
+      }
+      await settingsCtx.settings.update(QODER_SETTINGS_NS, { disabledModelsCN: Array.from(currentDisabled) })
       return { state: 'updated' }
     }
   })

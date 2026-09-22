@@ -47,6 +47,8 @@ export interface QoderStatusRouteOptions {
   authKey?: string
   /** Card preference selecting larger declared context windows. */
   useMaximumContextWindow?: () => boolean
+  /** Disabled models query for this variant. */
+  disabledModels?: () => readonly string[]
   /**
    * When the self-heal last auto-refreshed the job token, epoch ms; absent
    * when it has not happened in this process. Rides the signed-in document
@@ -192,6 +194,7 @@ export async function qoderWebStatus(deps: QoderStatusRouteOptions): Promise<Qod
       probe: deps.probe(),
       ...deps.probeKey === undefined ? {} : { probeKey: deps.probeKey },
       ...deps.useMaximumContextWindow === undefined ? {} : { useMaximumContextWindow: deps.useMaximumContextWindow() },
+      ...deps.disabledModels === undefined ? {} : { disabledModels: deps.disabledModels() },
     }
   const refreshedAt = deps.jobTokenRefreshedAt?.()
   const withRefreshNotice: QoderWebStatus = refreshedAt === undefined

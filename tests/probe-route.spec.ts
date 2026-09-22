@@ -198,6 +198,23 @@ describe('probe control route', () => {
     expect(refused.body['error']).toBe('context-window-setting-not-supported')
   })
 
+  it('accepts set-models-enabled action and forwards to handler', async () => {
+    let handled: { models: readonly string[]; enabled: boolean } | undefined
+    const { origin, key } = await mount({
+      setModelsEnabled: async opts => {
+        handled = opts
+        return { state: 'updated' }
+      },
+    })
+    const result = await post(
+      origin,
+      { action: 'set-models-enabled', models: ['model-a', 'model-b'], enabled: false },
+      { 'x-qoder-probe-key': key },
+    )
+    expect(result).toMatchObject({ status: 200, body: { state: 'updated' } })
+    expect(handled).toEqual({ models: ['model-a', 'model-b'], enabled: false })
+  })
+
   it('runs checkin and clear-checkin-logs actions when provided', async () => {
     let cleared = false
     let checkedIn = false

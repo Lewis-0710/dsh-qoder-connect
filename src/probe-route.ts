@@ -49,6 +49,8 @@ export interface QoderProbeRouteOptions {
   refresh?: () => Promise<{ state: string; reason?: string }>
   /** Persist and apply the international context-window preference. */
   setMaximumContextWindow?: (enabled: boolean) => Promise<{ state: string; reason?: string }>
+  /** Enable or disable models for this variant. */
+  setModelsEnabled?: (options: { models: readonly string[]; enabled: boolean }) => Promise<{ state: string; reason?: string }>
   /** Drop every recorded check-in log entry for this variant. */
   clearCheckInLogs?: () => void
   /** Trigger manual check-in for this variant. */
@@ -115,6 +117,19 @@ function parseAction(text: string): QoderProbeAction | undefined {
     return typeof wrapped['enabled'] === 'boolean'
       ? { action: 'set-maximum-context-window', enabled: wrapped['enabled'] }
       : undefined
+  }
+  if (action === 'set-models-enabled') {
+    if (typeof wrapped['enabled'] !== 'boolean') return undefined
+    const rawModels = wrapped['models']
+    const rawModel = wrapped['model']
+    let models: string[] = []
+    if (Array.isArray(rawModels)) {
+      models = rawModels.filter((m): m is string => typeof m === 'string' && m.trim() !== '').map(m => m.trim())
+    } else if (typeof rawModel === 'string' && rawModel.trim() !== '') {
+      models = [rawModel.trim()]
+    }
+    if (models.length === 0) return undefined
+    return { action: 'set-models-enabled', models, enabled: wrapped['enabled'] }
   }
   if (action === 'probe') {
     const model = wrapped['model']
@@ -188,6 +203,17 @@ export function qoderProbeHandler(
           return
         }
         json(res, 200, await deps.setMaximumContextWindow(action.enabled === true))
+        return
+      }
+      if (action.action === 'set-models-enabled') {
+        if (deps.setModelsEnabled === undefined) {
+          json(res, 404, { error: 'models-enabled-setting-not-supported' })
+          return
+        }
+        json(res, 200, await deps.setModelsEnabled({
+          models: action.models ?? (action.model ? [action.model] : []),
+          enabled: action.enabled === true,
+        }))
         return
       }
       json(res, 200, await deps.probe(action.model as string))

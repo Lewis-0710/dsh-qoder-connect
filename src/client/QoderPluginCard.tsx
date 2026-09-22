@@ -1,6 +1,6 @@
 /** Qoder status card contributed to Harness Plugin configuration. */
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { CSSProperties, ReactElement } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
@@ -567,6 +567,191 @@ function formatTokens(tokens: number): string {
   return String(tokens)
 }
 
+/**
+ * Model visibility table with individual toggle switches and batch enable/disable controls.
+ */
+function ModelSwitchTable({
+  models,
+  disabledModels = [],
+  t,
+  disabled,
+  onSetModelsEnabled,
+}: {
+  models: readonly QoderCatalogModelSnapshot[] | undefined
+  disabledModels?: readonly string[] | undefined
+  t: QoderPluginCardInjected['t']
+  disabled?: boolean | undefined
+  onSetModelsEnabled: (models: readonly string[], enabled: boolean) => void
+}): React.ReactNode {
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
+  const [searchQuery, setSearchQuery] = useState('')
+  const disabledSet = useMemo(() => new Set(disabledModels), [disabledModels])
+  const list = useMemo(() => models ?? [], [models])
+
+  const filteredList = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase()
+    if (!q) return list
+    return list.filter(m => m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q))
+  }, [list, searchQuery])
+
+  const allFilteredSelected = filteredList.length > 0 && filteredList.every(m => selected.has(m.id))
+  const toggleSelectAll = (): void => {
+    if (allFilteredSelected) {
+      const next = new Set(selected)
+      for (const m of filteredList) next.delete(m.id)
+      setSelected(next)
+    } else {
+      const next = new Set(selected)
+      for (const m of filteredList) next.add(m.id)
+      setSelected(next)
+    }
+  }
+
+  const toggleSelectOne = (id: string): void => {
+    const next = new Set(selected)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    setSelected(next)
+  }
+
+  const handleBatch = (enabled: boolean): void => {
+    const targets = Array.from(selected)
+    if (targets.length === 0) return
+    onSetModelsEnabled(targets, enabled)
+    setSelected(new Set())
+  }
+
+  if (list.length === 0) {
+    return (
+      <div style={quotaListStyle}>
+        <h3 style={quotaTitleStyle}>{t('modelsHeading')}</h3>
+        <p style={descriptionStyle}>{t('modelsNoModels')}</p>
+      </div>
+    )
+  }
+
+  return (
+    <div style={quotaListStyle}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <h3 style={quotaTitleStyle}>{t('modelsHeading')}</h3>
+        <p style={descriptionStyle}>{t('modelsSubtitle')}</p>
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <input
+          type="text"
+          value={searchQuery}
+          placeholder={t('modelsSearchPlaceholder')}
+          onChange={e => { setSearchQuery(e.currentTarget.value) }}
+          style={patInputStyle}
+        />
+        {searchQuery ? (
+          <button
+            type="button"
+            style={buttonStyle}
+            onClick={() => { setSearchQuery('') }}
+          >
+            {t('cancel')}
+          </button>
+        ) : null}
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--dsw-alias-border-l2)' }}>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13, userSelect: 'none' }}>
+          <input
+            type="checkbox"
+            checked={allFilteredSelected}
+            disabled={disabled || filteredList.length === 0}
+            onChange={toggleSelectAll}
+          />
+          <span>{allFilteredSelected ? t('modelsDeselectAll') : t('modelsSelectAll')}</span>
+        </label>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {selected.size > 0 ? (
+            <span style={modelRateStyle}>
+              {t('modelsSelectedCount', { count: selected.size })}
+            </span>
+          ) : null}
+          <button
+            type="button"
+            style={buttonStyle}
+            disabled={disabled || selected.size === 0}
+            onClick={() => { handleBatch(true) }}
+          >
+            {t('modelsEnableSelected')}
+          </button>
+          <button
+            type="button"
+            style={buttonStyle}
+            disabled={disabled || selected.size === 0}
+            onClick={() => { handleBatch(false) }}
+          >
+            {t('modelsDisableSelected')}
+          </button>
+        </div>
+      </div>
+
+      {filteredList.length === 0 ? (
+        <p style={descriptionStyle}>{t('modelsNoMatch', { query: searchQuery.trim() })}</p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {filteredList.map(model => {
+            const isModelEnabled = !disabledSet.has(model.id)
+            const isChecked = selected.has(model.id)
+            return (
+              <div
+                key={model.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '8px 10px',
+                  borderRadius: 6,
+                  background: 'var(--dsw-alias-bg-layer-2)',
+                  gap: 12,
+                  opacity: isModelEnabled ? 1 : 0.65,
+                }}
+              >
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10, minWidth: 0, flex: 1 }}>
+                  <input
+                    type="checkbox"
+                    checked={isChecked}
+                    disabled={disabled}
+                    onChange={() => { toggleSelectOne(model.id) }}
+                  />
+                  <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                    <span style={{ fontWeight: 500, fontSize: 13, color: 'var(--dsw-alias-label-primary)' }}>
+                      {model.name}
+                    </span>
+                    <span style={{ fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' }}>
+                      {model.id}
+                    </span>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: disabled ? 'not-allowed' : 'pointer', userSelect: 'none' }}>
+                    <input
+                      type="checkbox"
+                      checked={isModelEnabled}
+                      disabled={disabled}
+                      onChange={event => { onSetModelsEnabled([model.id], event.currentTarget.checked) }}
+                    />
+                    <span style={{ fontSize: 12, color: isModelEnabled ? 'var(--dsw-alias-label-primary)' : 'var(--dsw-alias-label-tertiary)' }}>
+                      {isModelEnabled ? t('modelsEnabled') : t('modelsDisabled')}
+                    </span>
+                  </label>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function CheckInLogTable({
   logs = [],
   t,
@@ -706,7 +891,7 @@ export function QoderPluginCard(props: QoderPluginCardProps) {
   const [patError, setPatError] = useState<string>()
   const [patNotice, setPatNotice] = useState<string>()
   const patInput = useRef<HTMLInputElement>(null)
-  const [tab, setTab] = useState<'status' | 'context' | 'details' | 'checkin'>('status')
+  const [tab, setTab] = useState<'status' | 'context' | 'models' | 'details' | 'checkin'>('status')
   const [checkingIn, setCheckingIn] = useState(false)
   const [clearingLogs, setClearingLogs] = useState(false)
   const [checkInNotice, setCheckInNotice] = useState<string>()
@@ -934,7 +1119,7 @@ export function QoderPluginCard(props: QoderPluginCardProps) {
           : `HTTP ${response.status}`
         throw new Error(message)
       }
-      if (action.action === 'set-maximum-context-window'
+      if ((action.action === 'set-maximum-context-window' || action.action === 'set-models-enabled')
         && (typeof value !== 'object' || value === null || (value as Record<string, unknown>)['state'] !== 'updated')) {
         const reason = typeof value === 'object' && value !== null && 'reason' in value
           ? String((value as Record<string, unknown>)['reason'])
@@ -1256,7 +1441,7 @@ export function QoderPluginCard(props: QoderPluginCardProps) {
                   ? null
                   : <p style={errorStyle}>{t('catalogError', { message: status.catalog.error })}</p>}
                 <div role="tablist" style={tabBarStyle}>
-                  {(['status', 'context', 'details', 'checkin'] as const).map(id => (
+                  {(['status', 'context', 'models', 'details', 'checkin'] as const).map(id => (
                     <button
                       key={id}
                       type="button"
@@ -1265,7 +1450,7 @@ export function QoderPluginCard(props: QoderPluginCardProps) {
                       onClick={() => { setTab(id) }}
                       style={{ ...tabStyle, ...(tab === id ? tabActiveStyle : {}) }}
                     >
-                      {t(id === 'status' ? 'tabStatus' : id === 'context' ? 'tabContext' : id === 'details' ? 'tabDetails' : 'tabCheckIn')}
+                      {t(id === 'status' ? 'tabStatus' : id === 'context' ? 'tabContext' : id === 'models' ? 'tabModels' : id === 'details' ? 'tabDetails' : 'tabCheckIn')}
                     </button>
                   ))}
                 </div>
@@ -1298,6 +1483,18 @@ export function QoderPluginCard(props: QoderPluginCardProps) {
                       disabled={busy}
                       {...status.useMaximumContextWindow === undefined ? {} : { useMaximumContextWindow: status.useMaximumContextWindow }}
                       onUseMaximumContextWindow={(enabled: boolean) => { void control({ action: 'set-maximum-context-window', enabled }) }}
+                    />
+                  </div>
+                ) : tab === 'models' ? (
+                  <div style={tabPanelStyle}>
+                    <ModelSwitchTable
+                      models={status.models}
+                      disabledModels={status.disabledModels}
+                      t={t}
+                      disabled={busy}
+                      onSetModelsEnabled={(models, enabled) => {
+                        void control({ action: 'set-models-enabled', models, enabled })
+                      }}
                     />
                   </div>
                 ) : tab === 'details' ? (

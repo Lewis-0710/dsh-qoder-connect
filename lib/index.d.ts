@@ -141,11 +141,13 @@ interface QoderProbeAction {
    * All are writes, which is why they share this route's in-process key
    * and loopback guards rather than the read-only status GET.
    */
-  action: 'probe' | 'clear' | 'refresh' | 'set-maximum-context-window' | 'clear-checkin-logs' | 'checkin';
+  action: 'probe' | 'clear' | 'refresh' | 'set-maximum-context-window' | 'clear-checkin-logs' | 'checkin' | 'set-models-enabled';
   /** Target model id; required for `probe`. */
   model?: string;
-  /** Requested value for `set-maximum-context-window`. */
+  /** Requested value for `set-maximum-context-window` or `set-models-enabled`. */
   enabled?: boolean;
+  /** Target model ids for `set-models-enabled` (supports single, batch, or all). */
+  models?: readonly string[];
 }
 /**
  * Where the models a card is currently showing came from.
@@ -246,6 +248,8 @@ type QoderWebStatus = {
   probe?: QoderWebProbeSection;
   /** Card preference selecting larger declared context windows. */
   useMaximumContextWindow?: boolean;
+  /** Disabled model IDs (blacklist) for this variant. */
+  disabledModels?: readonly string[];
   /**
    * The last automatic job-token refresh the self-heal performed, epoch ms.
    * Absent when no refresh has happened in this process. The card renders
@@ -545,9 +549,13 @@ declare class QoderCatalog {
   private useMaximumContextWindow;
   /** Per-model window overrides (model id → tokens); an override wins over the preference. */
   private modelContextWindows;
+  /** Disabled model IDs (blacklist); disabled models are filtered out from current(). */
+  private disabledModels;
   constructor(initial?: readonly QoderModelInfo[]);
-  /** Current entries; empty while the variant has no usable credential. */
+  /** Current entries; empty while the variant has no usable credential, excluding disabled models. */
   current(): readonly QoderModelInfo[];
+  /** All configured entries including disabled ones; empty while the variant has no usable credential. */
+  all(): readonly QoderModelInfo[];
   /** Replace the list; callers invalidate their adapter snapshot after this. */
   set(models: readonly QoderModelInfo[]): void;
   /** Whether this variant's models are exposed at all. */
@@ -564,6 +572,13 @@ declare class QoderCatalog {
    * changed, so the caller can skip an invalidation over an identical write.
    */
   setModelContextWindows(modelContextWindows: Readonly<Record<string, number>>): boolean;
+  /**
+   * Replace the disabled model IDs wholesale. Returns whether the set
+   * changed, so the caller can skip an invalidation over an identical write.
+   */
+  setDisabledModels(disabledModels: readonly string[]): boolean;
+  /** Current disabled model IDs. */
+  getDisabledModels(): readonly string[];
   /**
    * Models to fall back to when the upstream fetch fails; ignores
    * visibility, because the caller asking for the fallback already knows the
@@ -1392,6 +1407,10 @@ interface Config {
   modelContextWindows?: Record<string, number>;
   /** The China variant's per-model overrides; see {@link Config.modelContextWindows}. */
   modelContextWindowsCN?: Record<string, number>;
+  /** Models disabled for the global variant (blacklist). */
+  disabledModels?: string[];
+  /** Models disabled for the China variant (blacklist). */
+  disabledModelsCN?: string[];
   /** Show the China variant's sidebar quota card. */
   sidebarQuotaCN?: boolean;
   /** Show the global variant's sidebar quota card. */
@@ -1434,8 +1453,8 @@ declare const Config: z<Config>;
  * forever and the scheduler saw the toggle as permanently off. The card saved
  * it, the file held it, and nothing ever acted on it.
  */
-declare const CN_SECTION_KEYS: readonly ["probeConsent", "useMaximumContextWindowCN", "modelContextWindowsCN"];
-declare const GLOBAL_SECTION_KEYS: readonly ["useMaximumContextWindow", "modelContextWindows"];
+declare const CN_SECTION_KEYS: readonly ["probeConsent", "useMaximumContextWindowCN", "modelContextWindowsCN", "disabledModelsCN"];
+declare const GLOBAL_SECTION_KEYS: readonly ["useMaximumContextWindow", "modelContextWindows", "disabledModels"];
 declare const QUOTA_SECTION_KEYS: readonly ["sidebarQuotaCN", "sidebarQuotaGlobal", "autoCheckInCN", "autoCheckInGlobal", "checkInMinuteCN", "checkInMinuteGlobal", "quotaPollMs"];
 /**
  * Start both variants: their loopback endpoints, the `qoder` and
