@@ -2,13 +2,20 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { QoderCheckInResult, QoderCheckInService } from './qoder/transport/checkin.ts'
+import type { QoderCheckInResult } from './qoder/transport/checkin.ts'
 import { qoderPluginDataDir } from './paths.ts'
 
 export interface VariantCheckInTarget {
   variantId: string
-  service: QoderCheckInService
-  getPat: () => Promise<string | undefined>
+  /**
+   * Claim today's benefit for this variant.
+   *
+   * The variant's own transport owns credential resolution, so this takes no
+   * token: a missing or unusable credential surfaces as an `error` result
+   * rather than a throw, which keeps one signed-out variant from stopping the
+   * sweep for the other.
+   */
+  checkIn: (signal?: AbortSignal) => Promise<QoderCheckInResult>
   onClaimed?: () => void
 }
 
@@ -133,16 +140,21 @@ export function msUntilNext10amUtc8(nowMs: number = Date.now()): number {
 }
 
 /**
+ * Whether today's daily reset hour (10:00 UTC+8) has already passed.
+ */
+export function isPastDailyCheckInHour(nowMs: number = Date.now()): boolean {
+  const d = new Date(nowMs)
+  const utc8 = new Date(d.getTime() + (d.getTimezoneOffset() + 480) * 60_000)
+  return utc8.getHours() >= 10
+}
+
+/**
  * Checks whether catch-up is needed today:
  * Current time is past today's 10:00:00 AM (UTC+8) and today has not yet settled a check-in.
  */
 export function shouldCatchUp(today: string, lastDate?: string, nowMs: number = Date.now()): boolean {
   if (lastDate === today) return false
-  const d = new Date(nowMs)
-  const utc8 = new Date(d.getTime() + (d.getTimezoneOffset() + 480) * 60_000)
-  const hour = utc8.getHours()
-  // Past or at 10:00 AM UTC+8
-  return hour >= 10
+  return isPastDailyCheckInHour(nowMs)
 }
 
 export interface CheckInSchedulerOptions {
@@ -177,6 +189,20 @@ export class CheckInScheduler {
     this.armNextTimer()
   }
 
+  /**
+   * Re-run the startup catch-up once the toggles are actually readable.
+   *
+   * `start()` runs while the plugin is still assembling, before the settings
+   * section that owns these toggles has handed over its stored values, so that
+   * first sweep sees the raw plugin config and skips the day. The host calls
+   * this again from the section's source callback; the sweep is idempotent, so
+   * a day already handled costs nothing.
+   */
+  catchUp(): void {
+    if (this.disposed) return
+    void this.sweepAll(true)
+  }
+
   dispose(): void {
     this.disposed = true
     if (this.timer) {
@@ -204,24 +230,26 @@ export class CheckInScheduler {
       if (!this.isEnabled(target.variantId)) continue
 
       const record = this.store.read(target.variantId)
-      if (isCatchUp && !shouldCatchUp(today, record?.lastDate, nowMs)) {
-        continue
-      }
-      if (!isCatchUp && record?.lastDate === today && (record.status === 'claimed' || record.status === 'already-claimed')) {
-        continue
-      }
+      // Only an actually claimed day is settled. A day whose attempt ended in
+      // "no campaign" (the upstream had not released it yet) or in an error
+      // must stay retryable, otherwise one early failure burns the whole day —
+      // which is exactly what a wrong client identifier used to do.
+      const settledToday = record?.lastDate === today
+        && (record.status === 'claimed' || record.status === 'already-claimed')
+      if (settledToday) continue
+      // A catch-up run only makes sense once the daily reset hour has passed;
+      // before it, the scheduled timer still owns today's attempt.
+      if (isCatchUp && !isPastDailyCheckInHour(nowMs)) continue
 
-      let pat: string | undefined
+      let result: QoderCheckInResult
       try {
-        pat = await target.getPat()
+        result = await target.checkIn()
       } catch {
-        // No PAT available
+        // A transport-level throw (no credential at all, a rejection) is not a
+        // settled day: leave the record alone so a later sweep can retry.
         continue
       }
-      if (!pat) continue
-
       try {
-        const result = await target.service.checkIn(pat)
         if (result.status !== 'error') {
           this.store.write(target.variantId, {
             lastDate: result.date,

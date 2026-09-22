@@ -10,6 +10,7 @@ import {
 import { isQoderAuthRejection, QoderLlmError } from '../errors.ts'
 import type { QoderLogger } from './logging.ts'
 import { openApiJsonRequest } from './request.ts'
+import { qoderDesktopClientType } from './wire/cosy.ts'
 
 export interface QoderCampaignBenefit {
   kind?: string
@@ -89,6 +90,9 @@ export class QoderCheckInService {
     const data = await openApiJsonRequest<QoderCampaignsResponse>(this.fetchImpl, {
       url,
       token,
+      // The campaign family gates on the desktop identifier; the generic one
+      // answers 200 with an empty list (see `qoderDesktopClientType`).
+      headers: { 'cosy-clienttype': qoderDesktopClientType },
       signal,
       timeoutMs: this.timeoutMs,
       logger: this.logger,
@@ -105,7 +109,7 @@ export class QoderCheckInService {
       url,
       method: 'POST',
       token,
-      headers: { origin: openApiUrl },
+      headers: { origin: openApiUrl, 'cosy-clienttype': qoderDesktopClientType },
       signal,
       timeoutMs: this.timeoutMs,
       logger: this.logger,

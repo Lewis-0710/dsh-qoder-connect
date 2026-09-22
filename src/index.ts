@@ -26,7 +26,7 @@ import { createQoderShim } from './shim.ts'
 import { QoderProbeService } from './probe-service.ts'
 import { newestFirst, QoderProbeStore, qoderProbePath } from './probe-store.ts'
 import { QoderUpstreamClient, validateApiKey } from './upstream.ts'
-import { createQoderTransport, type QoderTransport } from './qoder/transport/index.ts'
+import { createQoderTransport, type QoderCheckInResult, type QoderTransport } from './qoder/transport/index.ts'
 import { getMachineId } from './qoder/transport/machine-id.ts'
 import { qoderMachineIdPath } from './paths.ts'
 import { registerQoderStatusRoute } from './web-status.ts'
@@ -402,6 +402,15 @@ interface VariantRuntime {
    * the card's status document, so the otherwise invisible recovery shows.
    */
   jobTokenRefreshedAt: () => number | undefined
+  /**
+   * Claim today's daily benefit for this variant's account.
+   *
+   * A capability the check-in scheduler and the card's manual button both
+   * need, surfaced as a named field rather than read out of the transport with
+   * an `as unknown as` cast: such a cast fails silently (a renamed private
+   * field turns every check-in into a no-op) instead of failing to compile.
+   */
+  checkIn: (signal?: AbortSignal) => Promise<QoderCheckInResult>
 }
 
 /** One catalog request plus the identity state it is allowed to update. */
@@ -564,6 +573,7 @@ function createVariantRuntime(
     invalidate: () => {},
     registered: false,
     jobTokenRefreshedAt: () => jobTokenRefreshedAt,
+    checkIn: (signal?: AbortSignal) => transport.checkIn(signal),
   }
 }
 
@@ -767,8 +777,7 @@ export function apply(ctx: Context, config: Config): void {
   const checkInScheduler = new CheckInScheduler({
     targets: runtimes.map(runtime => ({
       variantId: runtime.variant.id,
-      service: (runtime.transport as unknown as { checkInService: any }).checkInService,
-      getPat: async () => runtime.store.patPromise(),
+      checkIn: (signal?: AbortSignal) => runtime.checkIn(signal),
       onClaimed: () => {
         void runtime.client.fetchCredits().catch(() => undefined)
       },
@@ -781,6 +790,20 @@ export function apply(ctx: Context, config: Config): void {
     store: checkInStore,
   })
   checkInScheduler.start()
+  /**
+   * The startup catch-up, run once more from the settings source callback.
+   *
+   * `start()` above runs while the plugin is still assembling: the section
+   * that stores these toggles has not handed over its values yet, so that
+   * sweep reads the raw plugin config, sees no toggle, and skips the day. The
+   * retry is what makes "boot after 10:00" actually claim.
+   */
+  let startupCatchUpDone = false
+  const runStartupCatchUpOnce = (): void => {
+    if (startupCatchUpDone) return
+    startupCatchUpDone = true
+    checkInScheduler.catchUp()
+  }
 
   // The session-visible hint row for a self-heal: appends the harness's own
   // log-only `command/run` + `command/done` pair to the running conversation,
@@ -963,14 +986,7 @@ export function apply(ctx: Context, config: Config): void {
           checkInStore.clearLogs(runtime.variant.id)
         },
         checkIn: async () => {
-          let pat: string
-          try {
-            pat = await runtime.store.patPromise()
-          } catch {
-            return { state: 'failed', reason: 'No PAT available' }
-          }
-          const service = (runtime.transport as unknown as { checkInService: any }).checkInService
-          const result = await service.checkIn(pat)
+          const result = await runtime.checkIn()
           if (result.status !== 'error') {
             checkInStore.write(runtime.variant.id, {
               lastDate: result.date,
@@ -1061,8 +1077,22 @@ export function apply(ctx: Context, config: Config): void {
       onChange: repointStores,
     })
     settingsCtx.settings.installSection(ctx, QODER_QUOTA_SETTINGS_NS, QUOTA_SECTION, config, {
-      setSource(source) { sources.quota = source as () => Config; current = merged },
-      onChange: () => {},
+      setSource(source) {
+        sources.quota = source as () => Config
+        current = merged
+        // The check-in toggles live in this section, and this assignment is
+        // the first moment their stored values are readable. The catch-up the
+        // scheduler ran at construction saw the raw plugin config instead, so
+        // it skipped the day; re-run it here, exactly once, so a machine that
+        // boots after 10:00 still claims today.
+        runStartupCatchUpOnce()
+      },
+      onChange: () => {
+        // Flipping a toggle on is a request to check in now rather than at the
+        // next 10:00. The sweep is idempotent: a day already claimed, or a
+        // variant whose toggle is off, is skipped before any request is made.
+        void checkInScheduler.sweepAll(true)
+      },
     })
     setMaximumContextWindow = async enabled => {
       await settingsCtx.settings.update(QODER_GLOBAL_SETTINGS_NS, { useMaximumContextWindow: enabled })

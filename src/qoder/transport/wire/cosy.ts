@@ -19,6 +19,18 @@ XcW+ML9FoCI6AOvOzwIDAQAB
 
 export const qoderIdeVersion = '1.1.47'
 export const qoderClientType = '5'
+/**
+ * The desktop client identifier the campaign endpoints require.
+ *
+ * Measured against the live upstream: `/sash/api/v1/me/campaigns` answers
+ * HTTP 200 with an EMPTY `campaigns` array when the caller presents the
+ * generic {@link qoderClientType} (`5`), and returns the real list only when
+ * it presents the desktop identifier `10`. A check-in built on the wrong
+ * identifier looks healthy at the transport layer — status 200, no error —
+ * while silently reporting "no campaign today" forever, so the campaign
+ * paths must send this one explicitly.
+ */
+export const qoderDesktopClientType = '10'
 export const defaultUserAgent = `qoder/${qoderIdeVersion}`
 const qoderDataPolicy = 'disagree'
 const qoderLoginVersion = 'v2'

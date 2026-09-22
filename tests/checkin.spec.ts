@@ -123,6 +123,32 @@ describe('QoderCheckInService', () => {
     expect(result.status).toBe('no-campaign')
   })
 
+  it('identifies as the desktop client, without which the upstream returns an empty campaign list', async () => {
+    const auth = createMockAuth()
+    const seenHeaders: (Record<string, string> | undefined)[] = []
+    const mockFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      seenHeaders.push(init?.headers as Record<string, string> | undefined)
+      return new Response(JSON.stringify({ campaigns: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }) as unknown as typeof fetch
+
+    const service = new QoderCheckInService({
+      authService: auth,
+      variantId: 'qoder',
+      region: 'china',
+      fetch: mockFetch,
+    })
+    await service.checkIn('pt-test')
+
+    // Measured against the live upstream: `cosy-clienttype: 5` answers HTTP
+    // 200 with `campaigns: []`, while the desktop identifier `10` returns the
+    // real campaign list. Sending `5` silently degrades every check-in into
+    // "no campaign today", so nothing is ever claimed.
+    expect(seenHeaders[0]?.['cosy-clienttype']).toBe('10')
+  })
+
   it('self-heals with exchangeFresh when auth token is rejected with 401', async () => {
     let callCount = 0
     const auth = {
@@ -200,15 +226,13 @@ describe('CheckInScheduler', () => {
       clearLogs: (id) => { if (storeRecords[id]) storeRecords[id].logs = [] },
     }
 
-    const mockService = {
-      checkIn: vi.fn(async () => ({
-        variantId: 'qoder',
-        date: '2026-09-21',
-        timestamp: Date.now(),
-        status: 'claimed' as const,
-        amount: 100,
-      })),
-    } as unknown as QoderCheckInService
+    const checkIn = vi.fn(async () => ({
+      variantId: 'qoder',
+      date: '2026-09-21',
+      timestamp: Date.now(),
+      status: 'claimed' as const,
+      amount: 100,
+    }))
 
     const onClaimed = vi.fn()
     const after10 = new Date('2026-09-21T04:00:00.000Z').getTime()
@@ -217,8 +241,7 @@ describe('CheckInScheduler', () => {
       targets: [
         {
           variantId: 'qoder',
-          service: mockService,
-          getPat: async () => 'pat-ok',
+          checkIn,
           onClaimed,
         },
       ],
@@ -232,10 +255,81 @@ describe('CheckInScheduler', () => {
     await new Promise(r => setTimeout(r, 10))
     scheduler.dispose()
 
-    expect(mockService.checkIn).toHaveBeenCalledWith('pat-ok')
+    expect(checkIn).toHaveBeenCalled()
     expect(onClaimed).toHaveBeenCalled()
     expect(storeRecords.qoder?.status).toBe('claimed')
     expect(storeRecords.qoder?.lastDate).toBe('2026-09-21')
+  })
+
+  it('retries later the same day when an earlier attempt claimed nothing', async () => {
+    const records: Record<string, CheckInRecord> = {
+      qoder: { lastDate: '2026-09-22', lastAt: 1, status: 'no-campaign' },
+    }
+    const store: CheckInStatusStore = {
+      read: id => records[id],
+      write: (id, record) => { records[id] = record },
+      clearLogs: id => { if (records[id]) records[id].logs = [] },
+    }
+    const checkIn = vi.fn(async () => ({
+      variantId: 'qoder',
+      date: '2026-09-22',
+      timestamp: 2,
+      status: 'claimed' as const,
+      amount: 100,
+    }))
+
+    const scheduler = new CheckInScheduler({
+      targets: [{
+        variantId: 'qoder',
+        checkIn,
+      }],
+      isEnabled: () => true,
+      store,
+      now: () => new Date('2026-09-22T04:00:00.000Z').getTime(),
+    })
+
+    scheduler.start()
+    await new Promise(r => setTimeout(r, 10))
+    scheduler.dispose()
+
+    // "Nothing to claim yet" is not a settled day: a later attempt the same
+    // day must still be allowed to claim it.
+    expect(checkIn).toHaveBeenCalled()
+    expect(records.qoder?.status).toBe('claimed')
+  })
+
+  it('skips the rest of the day once the day was actually claimed', async () => {
+    const records: Record<string, CheckInRecord> = {
+      qoder: { lastDate: '2026-09-22', lastAt: 1, status: 'claimed', amount: 100 },
+    }
+    const store: CheckInStatusStore = {
+      read: id => records[id],
+      write: (id, record) => { records[id] = record },
+      clearLogs: id => { if (records[id]) records[id].logs = [] },
+    }
+    const checkIn = vi.fn(async () => ({
+      variantId: 'qoder',
+      date: '2026-09-22',
+      timestamp: 2,
+      status: 'claimed' as const,
+      amount: 100,
+    }))
+
+    const scheduler = new CheckInScheduler({
+      targets: [{
+        variantId: 'qoder',
+        checkIn,
+      }],
+      isEnabled: () => true,
+      store,
+      now: () => new Date('2026-09-22T04:00:00.000Z').getTime(),
+    })
+
+    scheduler.start()
+    await new Promise(r => setTimeout(r, 10))
+    scheduler.dispose()
+
+    expect(checkIn).not.toHaveBeenCalled()
   })
 
   it('accumulates and caps history logs up to 30 entries in JsonFileCheckInStore', () => {
