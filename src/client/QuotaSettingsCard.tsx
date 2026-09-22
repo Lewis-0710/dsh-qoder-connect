@@ -70,21 +70,11 @@ const POLL_MIN_MS = 60_000
 /** 10:00 UTC+8, the moment the upstream resets the daily campaign. */
 const CHECK_IN_MINUTE_DEFAULT = 600
 
-/** Minutes past midnight (UTC+8) as the `HH:mm` a time input renders. */
-function minutesToTimeValue(minutes: number): string {
+/** Minutes past midnight (UTC+8), split for the two number fields. */
+function splitMinutes(minutes: number): { hours: number; minutes: number } {
   const safe = Number.isFinite(minutes) ? Math.trunc(minutes) : CHECK_IN_MINUTE_DEFAULT
   const clamped = safe < 0 || safe > 1439 ? CHECK_IN_MINUTE_DEFAULT : safe
-  return `${String(Math.floor(clamped / 60)).padStart(2, '0')}:${String(clamped % 60).padStart(2, '0')}`
-}
-
-/** The `HH:mm` a time input yields back as minutes past midnight, or undefined. */
-function timeValueToMinutes(value: string): number | undefined {
-  const match = /^(\d{1,2}):(\d{2})$/u.exec(value)
-  if (match === null) return undefined
-  const hours = Number(match[1])
-  const minutes = Number(match[2])
-  if (hours > 23 || minutes > 59) return undefined
-  return hours * 60 + minutes
+  return { hours: Math.floor(clamped / 60), minutes: clamped % 60 }
 }
 
 /** Projection the card component reads. */
@@ -226,11 +216,14 @@ function ToggleRow({ label, hint, checked, disabled, disabledHint, onToggle }: {
 }
 
 /**
- * One time row: the moment a variant checks in, as a native time picker.
+ * One time row: the moment a variant checks in, as two typeable number fields.
  *
- * A `time` input rather than a number field because the value is a wall clock
- * moment in UTC+8, and the browser's picker already speaks that vocabulary —
- * the row stores the minute count the host schema validates.
+ * Deliberately NOT `<input type="time">`: that control's segments are spinners,
+ * and with an IME active (every Chinese/Japanese keyboard) the segments refuse
+ * typed digits, leaving only the tiny stepper arrows — unusable for the one
+ * thing this row exists to do. Two plain number fields accept typing under any
+ * input method; the value is committed on blur or Enter, so a half-typed
+ * field never writes a wrong moment to the host.
  */
 function TimeRow({ label, hint, value, disabled, onPick }: {
   label: string
@@ -239,6 +232,41 @@ function TimeRow({ label, hint, value, disabled, onPick }: {
   disabled?: boolean
   onPick: (minutes: number) => void
 }): React.ReactNode {
+  const split = splitMinutes(value)
+  const [hourDraft, setHourDraft] = useState(String(split.hours))
+  const [minuteDraft, setMinuteDraft] = useState(String(split.minutes).padStart(2, '0'))
+
+  // Re-seed the fields whenever the stored value changes underneath us (a
+  // save landing, another surface editing it). Editing itself does not write
+  // until commit, so this cannot fight the typist.
+  useEffect(() => {
+    const next = splitMinutes(value)
+    setHourDraft(String(next.hours))
+    setMinuteDraft(String(next.minutes).padStart(2, '0'))
+  }, [value])
+
+  const commit = (): void => {
+    const parsedHours = Number.parseInt(hourDraft, 10)
+    const parsedMinutes = Number.parseInt(minuteDraft, 10)
+    const hours = Number.isFinite(parsedHours) ? Math.min(23, Math.max(0, parsedHours)) : split.hours
+    const minutes = Number.isFinite(parsedMinutes) ? Math.min(59, Math.max(0, parsedMinutes)) : split.minutes
+    const next = hours * 60 + minutes
+    if (next === value) {
+      // Nothing to write, but normalize what is on screen ("9" -> "09").
+      setHourDraft(String(hours))
+      setMinuteDraft(String(minutes).padStart(2, '0'))
+      return
+    }
+    onPick(next)
+  }
+
+  const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>): void => {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      commit()
+    }
+  }
+
   return (
     <div style={rowStyle}>
       <div style={rowTextStyle}>
@@ -247,17 +275,31 @@ function TimeRow({ label, hint, value, disabled, onPick }: {
       </div>
       <span style={pollFieldStyle}>
         <input
-          type="time"
-          value={minutesToTimeValue(value)}
+          type="number"
+          min={0}
+          max={23}
+          value={hourDraft}
           disabled={disabled}
-          aria-label={label}
-          onChange={event => {
-            const minutes = timeValueToMinutes(event.target.value)
-            // An empty or half-typed value is not a time yet; leaving the
-            // stored one alone beats writing an arbitrary replacement.
-            if (minutes !== undefined) onPick(minutes)
-          }}
-          style={{ ...timeInputStyle, opacity: disabled === true ? 0.45 : 1 }}
+          aria-label={`${label} — hour`}
+          data-checkin-part="hour"
+          onChange={event => { setHourDraft(event.target.value) }}
+          onBlur={commit}
+          onKeyDown={onKeyDown}
+          style={{ ...timePartStyle, opacity: disabled === true ? 0.45 : 1 }}
+        />
+        <span style={labelStyle}>:</span>
+        <input
+          type="number"
+          min={0}
+          max={59}
+          value={minuteDraft}
+          disabled={disabled}
+          aria-label={`${label} — minute`}
+          data-checkin-part="minute"
+          onChange={event => { setMinuteDraft(event.target.value) }}
+          onBlur={commit}
+          onKeyDown={onKeyDown}
+          style={{ ...timePartStyle, opacity: disabled === true ? 0.45 : 1 }}
         />
         <span style={hintStyle}>UTC+8</span>
       </span>
@@ -570,9 +612,9 @@ const switchStyle: CSSProperties = {
 }
 const knobStyle: CSSProperties = { display: 'block', width: 16, height: 16, borderRadius: '50%', background: 'var(--dsw-alias-bg-layer-1, #fff)', boxShadow: '0 1px 2px rgba(0,0,0,0.2)' }
 const pollFieldStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, flex: 'none' }
-const timeInputStyle: CSSProperties = {
+const timePartStyle: CSSProperties = {
   boxSizing: 'border-box',
-  width: 104,
+  width: 56,
   padding: '5px 8px',
   borderWidth: '1px',
   borderStyle: 'solid',
@@ -582,6 +624,7 @@ const timeInputStyle: CSSProperties = {
   color: 'var(--dsw-alias-label-primary)',
   font: 'inherit',
   fontSize: 13,
+  textAlign: 'center',
 }
 const inputStyle: CSSProperties = {
   boxSizing: 'border-box',

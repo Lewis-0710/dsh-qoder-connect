@@ -502,7 +502,7 @@ describe('Unified Qoder Plugin Card', () => {
     expect(clearBtn.length).toBeGreaterThanOrEqual(1)
   })
 
-  it('stores a custom check-in time as minutes past midnight in UTC+8', async () => {
+  it('stores a typed check-in time as minutes past midnight in UTC+8', async () => {
     const mockSet = vi.fn()
     const fakeScope = {
       getSnapshot: () => ({
@@ -530,18 +530,28 @@ describe('Unified Qoder Plugin Card', () => {
       }))
     })
 
-    const timeInputs = renderer!.root.findAll(n => n.props.type === 'time')
-    expect(timeInputs).toHaveLength(2)
-    // The stored minute count renders as the wall clock the picker speaks.
-    expect(timeInputs[0]!.props.value).toBe('10:00')
+    // Two rows, each an hour and a minute field — typeable under any input
+    // method, unlike the `type="time"` spinner segments this replaced.
+    const part = (name: string, index = 0) =>
+      renderer!.root.findAll(n => n.props['data-checkin-part'] === name)[index]!
+    expect(renderer!.root.findAll(n => n.props['data-checkin-part'] === 'hour')).toHaveLength(2)
+    expect(renderer!.root.findAll(n => n.props['data-checkin-part'] === 'minute')).toHaveLength(2)
+    expect(renderer!.root.findAll(n => n.props.type === 'time')).toHaveLength(0)
 
-    await act(async () => {
-      timeInputs[0]!.props.onChange({ target: { value: '14:30' } })
-    })
+    // The stored minute count renders as 10:00.
+    expect(part('hour').props.value).toBe('10')
+    expect(part('minute').props.value).toBe('00')
+
+    await act(async () => { part('hour').props.onChange({ target: { value: '14' } }) })
+    await act(async () => { part('minute').props.onChange({ target: { value: '30' } }) })
+    // Nothing is written mid-typing; the commit is what persists it.
+    expect(mockSet).not.toHaveBeenCalled()
+    await act(async () => { part('hour').props.onBlur() })
     expect(mockSet).toHaveBeenCalledWith('checkInMinuteCN', 870)
 
     // The Global row stays locked while its own account is signed out.
-    expect(timeInputs[1]!.props.disabled).toBe(true)
+    expect(part('hour', 1).props.disabled).toBe(true)
+    expect(part('minute', 1).props.disabled).toBe(true)
     act(() => renderer?.unmount())
   })
 })
