@@ -293,9 +293,14 @@ describe('Qoder Host settings integration', () => {
     // No credential-path field survives on either card: a credential is a PAT
     // pasted into the card and stored by the plugin, so there is nothing left
     // to point at a file.
-    expect(fieldsOf('qoder')).toEqual(['probeConsent', 'useMaximumContextWindowCN', 'modelContextWindowsCN'])
-    expect(fieldsOf('qoder-global')).toEqual(['useMaximumContextWindow', 'modelContextWindows'])
-    expect(fieldsOf('qoder-quota')).toEqual(['sidebarQuotaCN', 'sidebarQuotaGlobal', 'autoCheckInCN', 'autoCheckInGlobal', 'checkInMinuteCN', 'checkInMinuteGlobal', 'quotaPollMs'])
+    //
+    // Each section is pinned to the field list its merge copies. A field the
+    // section stores but the merge drops reads `undefined` to the rest of the
+    // plugin — the card saves it, the file holds it, and nothing acts on it,
+    // which is how a saved auto check-in toggle silently did nothing.
+    expect(fieldsOf('qoder')).toEqual([...Qoder.CN_SECTION_KEYS])
+    expect(fieldsOf('qoder-global')).toEqual([...Qoder.GLOBAL_SECTION_KEYS])
+    expect(fieldsOf('qoder-quota')).toEqual([...Qoder.QUOTA_SECTION_KEYS])
 
     // A write through one section must reach only THAT variant. The same live
     // roster is served to both arms, and each now carries its own maximum-window

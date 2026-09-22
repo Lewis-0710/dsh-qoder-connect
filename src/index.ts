@@ -367,6 +367,52 @@ const QUOTA_SECTION: z<Config> = z.object({
   quotaPollMs: QUOTA_POLL_FIELD,
 })
 
+/**
+ * Every field each settings section owns, and therefore every field the live
+ * configuration has to carry through.
+ *
+ * One list per section, shared by the merge and by the test that pins it to
+ * the schema. Writing the merge out by hand is what broke auto check-in: the
+ * `qoder-quota` section grew four fields (`autoCheckInCN`, `autoCheckInGlobal`,
+ * `checkInMinuteCN`, `checkInMinuteGlobal`) while the merge kept copying only
+ * the three that predated them, so `current().autoCheckInCN` read `undefined`
+ * forever and the scheduler saw the toggle as permanently off. The card saved
+ * it, the file held it, and nothing ever acted on it.
+ */
+export const CN_SECTION_KEYS = [
+  'probeConsent',
+  'useMaximumContextWindowCN',
+  'modelContextWindowsCN',
+] as const satisfies readonly (keyof Config)[]
+
+export const GLOBAL_SECTION_KEYS = [
+  'useMaximumContextWindow',
+  'modelContextWindows',
+] as const satisfies readonly (keyof Config)[]
+
+export const QUOTA_SECTION_KEYS = [
+  'sidebarQuotaCN',
+  'sidebarQuotaGlobal',
+  'autoCheckInCN',
+  'autoCheckInGlobal',
+  'checkInMinuteCN',
+  'checkInMinuteGlobal',
+  'quotaPollMs',
+] as const satisfies readonly (keyof Config)[]
+
+/** Copy the declared fields off one section's source, skipping absent ones. */
+function pickFields<K extends keyof Config>(
+  source: () => Config,
+  keys: readonly K[],
+): Partial<Config> {
+  const value = source()
+  const picked: Partial<Config> = {}
+  for (const key of keys) {
+    if (value[key] !== undefined) picked[key] = value[key]
+  }
+  return picked
+}
+
 /** One variant's live runtime, assembled by {@link createVariantRuntime}. */
 interface VariantRuntime {
   variant: QoderVariant
@@ -1074,14 +1120,9 @@ export function apply(ctx: Context, config: Config): void {
     }
     /** Merge all sections into the whole config the rest of the plugin reads. */
     const merged = (): Config => ({
-      ...sources.cn().probeConsent === undefined ? {} : { probeConsent: sources.cn().probeConsent },
-      ...sources.cn().useMaximumContextWindowCN === undefined ? {} : { useMaximumContextWindowCN: sources.cn().useMaximumContextWindowCN },
-      ...sources.cn().modelContextWindowsCN === undefined ? {} : { modelContextWindowsCN: sources.cn().modelContextWindowsCN },
-      ...sources.global().useMaximumContextWindow === undefined ? {} : { useMaximumContextWindow: sources.global().useMaximumContextWindow },
-      ...sources.global().modelContextWindows === undefined ? {} : { modelContextWindows: sources.global().modelContextWindows },
-      ...sources.quota().sidebarQuotaCN === undefined ? {} : { sidebarQuotaCN: sources.quota().sidebarQuotaCN },
-      ...sources.quota().sidebarQuotaGlobal === undefined ? {} : { sidebarQuotaGlobal: sources.quota().sidebarQuotaGlobal },
-      ...sources.quota().quotaPollMs === undefined ? {} : { quotaPollMs: sources.quota().quotaPollMs },
+      ...pickFields(sources.cn, CN_SECTION_KEYS),
+      ...pickFields(sources.global, GLOBAL_SECTION_KEYS),
+      ...pickFields(sources.quota, QUOTA_SECTION_KEYS),
     })
     const applyMaximumContextWindow = (next: Config): void => {
       let changed = false
@@ -1111,11 +1152,12 @@ export function apply(ctx: Context, config: Config): void {
       setSource(source) {
         sources.quota = source as () => Config
         current = merged
-        // The check-in toggles live in this section, and this assignment is
-        // the first moment their stored values are readable. The catch-up the
-        // scheduler ran at construction saw the raw plugin config instead, so
-        // it skipped the day; re-run it here, exactly once, so a machine that
-        // boots after 10:00 still claims today.
+        // Both the timers and the catch-up depend on these stored values, and
+        // this assignment is the first moment they are readable. Re-arm first
+        // (so each variant gets a timer at its configured moment rather than
+        // the default), then run the catch-up that a boot after that moment
+        // needs.
+        checkInScheduler.rearm()
         runStartupCatchUpOnce()
       },
       onChange: () => {

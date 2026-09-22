@@ -238,6 +238,52 @@ describe('CheckInScheduler', () => {
     expect(isPastCheckInTime(0, midnightUtc8)).toBe(true)
   })
 
+  it('arms a timer before the toggles are readable, and re-arms to a retimed moment', () => {
+    const delays: number[] = []
+    const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+      _handler: () => void,
+      delay?: number,
+    ) => {
+      delays.push(Number(delay))
+      return 0 as unknown as NodeJS.Timeout
+    }) as typeof setTimeout)
+
+    let minute = 870 // 14:30
+    const scheduler = new CheckInScheduler({
+      targets: [{
+        variantId: 'qoder',
+        checkIn: async () => ({
+          variantId: 'qoder',
+          date: '2026-09-22',
+          timestamp: 1,
+          status: 'claimed' as const,
+        }),
+        minuteOfDay: () => minute,
+      }],
+      // The stored toggle is not readable yet at assembly time. Gating timer
+      // placement on this is what left a configured 12:13 check-in with no
+      // timer at all, so placement must not depend on it.
+      isEnabled: () => false,
+      now: () => new Date('2026-09-22T00:00:00.000Z').getTime(), // 08:00 UTC+8
+    })
+
+    scheduler.rearm()
+    expect(delays).toHaveLength(1)
+    // 08:00 -> 14:30 is 6.5 hours.
+    expect(delays[0]).toBeGreaterThan(6.4 * 3600 * 1000)
+    expect(delays[0]).toBeLessThan(6.6 * 3600 * 1000)
+
+    minute = DEFAULT_CHECK_IN_MINUTE // retimed to 10:00
+    scheduler.rearm()
+    expect(delays).toHaveLength(2)
+    // 08:00 -> 10:00 is 2 hours.
+    expect(delays[1]).toBeGreaterThan(7_100_000)
+    expect(delays[1]).toBeLessThan(7_300_000)
+
+    scheduler.dispose()
+    spy.mockRestore()
+  })
+
   it('runs catchup and updates store when enabled', async () => {
     const storeRecords: Record<string, CheckInRecord> = {}
     const store: CheckInStatusStore = {

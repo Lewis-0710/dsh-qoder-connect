@@ -241,16 +241,23 @@ export class CheckInScheduler {
   /**
    * Re-place every variant's timer.
    *
-   * Called after each fire and whenever the configured moment changes, so a
-   * user editing the time in the card does not have to restart DSH for it to
+   * Called after each fire and whenever configuration lands or changes, so a
+   * user editing the time on the card does not have to restart DSH for it to
    * take effect.
+   *
+   * A timer is placed for every target, including variants whose toggle is
+   * currently off. `start()` runs while the plugin is still assembling, when
+   * the stored toggles are not readable yet, so gating placement on
+   * `isEnabled` left a variant with NO timer at all — and nothing re-armed it
+   * afterwards, which is precisely how a configured 12:13 check-in never
+   * fired. Whether the work is due is decided inside the sweep, where the
+   * configuration is current; the timer only decides when to look.
    */
   rearm(): void {
     if (this.disposed) return
     for (const timer of this.timers.values()) clearTimeout(timer)
     this.timers.clear()
     for (const target of this.targets) {
-      if (!this.isEnabled(target.variantId)) continue
       const timer = setTimeout(() => {
         this.timers.delete(target.variantId)
         void this.sweepAll(false, target.variantId).finally(() => { this.rearm() })
