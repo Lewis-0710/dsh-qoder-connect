@@ -578,6 +578,7 @@ function CheckInLogTable({
   clearing,
   disabled,
   notice,
+  nextRun,
 }: {
   logs?: readonly {
     id: string
@@ -596,6 +597,7 @@ function CheckInLogTable({
   clearing?: boolean
   disabled?: boolean
   notice?: string | undefined
+  nextRun?: number | undefined
 }): React.ReactNode {
   return (
     <div style={quotaListStyle}>
@@ -629,6 +631,9 @@ function CheckInLogTable({
         </div>
       </div>
       {notice === undefined ? null : <p style={bodyStyle}>{notice}</p>}
+      {nextRun === undefined ? null : (
+        <p style={descriptionStyle}>{t('checkInNextRun', { time: formatTime(nextRun) })}</p>
+      )}
       {!logs || logs.length === 0 ? (
         <p style={descriptionStyle}>{t('checkInLogEmpty')}</p>
       ) : (
@@ -1326,6 +1331,7 @@ export function QoderPluginCard(props: QoderPluginCardProps) {
                       clearing={clearingLogs}
                       disabled={status.status !== 'signed-in'}
                       {...checkInNotice === undefined ? {} : { notice: checkInNotice }}
+                      {...status.checkIn?.nextRunAt === undefined ? {} : { nextRun: status.checkIn.nextRunAt }}
                       onCheckIn={() => { void manualCheckIn() }}
                       onRefresh={() => { void manualRefresh() }}
                       onClear={() => { void clearCheckInLogs() }}

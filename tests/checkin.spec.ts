@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { QoderCheckInService } from '../src/qoder/transport/checkin.ts'
+import { QoderCheckInService, type QoderCheckInResult } from '../src/qoder/transport/checkin.ts'
 import type { QoderAuthService } from '../src/qoder/transport/auth.ts'
 import {
   CheckInScheduler,
@@ -399,6 +399,62 @@ describe('CheckInScheduler', () => {
     scheduler.dispose()
 
     expect(checkIn).not.toHaveBeenCalled()
+  })
+
+  it('never sweeps one variant twice at once', async () => {
+    let settle: ((result: QoderCheckInResult) => void) | undefined
+    const checkIn = vi.fn(() => new Promise<QoderCheckInResult>(resolve => { settle = resolve }))
+    const writes: CheckInRecord[] = []
+    const store: CheckInStatusStore = {
+      read: () => undefined,
+      write: (_id, record) => { writes.push(record) },
+      clearLogs: () => {},
+    }
+    const scheduler = new CheckInScheduler({
+      targets: [{
+        variantId: 'qoder',
+        checkIn,
+        minuteOfDay: () => DEFAULT_CHECK_IN_MINUTE,
+      }],
+      isEnabled: () => true,
+      store,
+      now: () => new Date('2026-09-22T04:00:00.000Z').getTime(),
+    })
+
+    // `start()` and the settings section's first catch-up overlap during
+    // assembly. Both used to claim, which the live log showed as two rows five
+    // milliseconds apart for one action.
+    const first = scheduler.sweepAll(true)
+    const second = scheduler.sweepAll(true)
+    await Promise.resolve()
+    expect(checkIn).toHaveBeenCalledTimes(1)
+
+    settle!({ variantId: 'qoder', date: '2026-09-22', timestamp: 1, status: 'claimed', amount: 100 })
+    await Promise.all([first, second])
+    expect(checkIn).toHaveBeenCalledTimes(1)
+    expect(writes).toHaveLength(1)
+    scheduler.dispose()
+  })
+
+  it('publishes when the next automatic run is due', () => {
+    const scheduler = new CheckInScheduler({
+      targets: [{
+        variantId: 'qoder',
+        checkIn: async () => ({ variantId: 'qoder', date: '2026-09-22', timestamp: 1, status: 'claimed' as const }),
+        minuteOfDay: () => DEFAULT_CHECK_IN_MINUTE,
+      }],
+      isEnabled: () => true,
+      store: { read: () => undefined, write: () => {}, clearLogs: () => {} },
+      now: () => new Date('2026-09-22T00:00:00.000Z').getTime(), // 08:00 UTC+8
+    })
+
+    scheduler.rearm()
+    const due = scheduler.nextRunAt('qoder')
+    expect(due).toBeDefined()
+    // 08:00 -> 10:00 is 2 hours.
+    expect(due! - new Date('2026-09-22T00:00:00.000Z').getTime()).toBeGreaterThan(7_100_000)
+    expect(due! - new Date('2026-09-22T00:00:00.000Z').getTime()).toBeLessThan(7_300_000)
+    scheduler.dispose()
   })
 
   it('accumulates and caps history logs up to 30 entries in JsonFileCheckInStore', () => {

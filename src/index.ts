@@ -988,7 +988,18 @@ export function apply(ctx: Context, config: Config): void {
           ? { useMaximumContextWindow: () => current().useMaximumContextWindowCN === true }
           : { useMaximumContextWindow: () => current().useMaximumContextWindow === true }),
         jobTokenRefreshedAt: runtime.jobTokenRefreshedAt,
-        checkIn: () => checkInStore.read(runtime.variant.id),
+        checkIn: () => {
+          const record = checkInStore.read(runtime.variant.id)
+          if (record === undefined) return undefined
+          const nextRunAt = checkInScheduler.nextRunAt(runtime.variant.id)
+          return {
+            ...record,
+            // Rides the record so the card can show the pending moment: a day
+            // already claimed stays silent by design, and without this the
+            // user cannot tell a waiting timer from a missing one.
+            ...nextRunAt === undefined ? {} : { nextRunAt },
+          }
+        },
       })
       registerQoderAuthRoute(webCtx, {
         path: runtime.variant.authPath,

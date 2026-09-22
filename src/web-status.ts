@@ -60,6 +60,7 @@ export interface QoderStatusRouteOptions {
     status: 'claimed' | 'already-claimed' | 'no-campaign' | 'error'
     amount?: number | undefined
     message?: string | undefined
+    nextRunAt?: number | undefined
     logs?: readonly {
       id: string
       date: string

@@ -241,6 +241,14 @@ export type QoderWebStatus =
       status: 'claimed' | 'already-claimed' | 'no-campaign' | 'error'
       amount?: number | undefined
       message?: string | undefined
+      /**
+       * When the scheduler's timer is next due, epoch ms.
+       *
+       * A day already claimed goes deliberately quiet, so without this the
+       * card cannot tell "scheduled and waiting" from "no timer at all" —
+       * which is exactly the doubt a missing timer created.
+       */
+      nextRunAt?: number | undefined
       logs?: readonly {
         id: string
         date: string

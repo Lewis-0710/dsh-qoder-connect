@@ -201,6 +201,12 @@ export class CheckInScheduler {
    * worse failure mode.
    */
   private readonly timers = new Map<string, NodeJS.Timeout>()
+  /**
+   * Variants with a sweep in progress, so concurrent callers cannot double-claim.
+   */
+  private readonly inFlight = new Set<string>()
+  /** When each variant's timer is next due, epoch ms, for the card to show. */
+  private readonly nextRuns = new Map<string, number>()
   private disposed = false
 
   constructor(options: CheckInSchedulerOptions) {
@@ -257,14 +263,27 @@ export class CheckInScheduler {
     if (this.disposed) return
     for (const timer of this.timers.values()) clearTimeout(timer)
     this.timers.clear()
+    this.nextRuns.clear()
+    const nowMs = this.now()
     for (const target of this.targets) {
+      const delay = msUntilNextCheckIn(target.minuteOfDay(), nowMs)
+      // Published so the card can say when the next automatic run is due. That
+      // is the only way a user can tell a scheduled timer from a missing one:
+      // a day already claimed goes quiet by design, and silence looks
+      // identical to a broken scheduler.
+      this.nextRuns.set(target.variantId, nowMs + delay)
       const timer = setTimeout(() => {
         this.timers.delete(target.variantId)
         void this.sweepAll(false, target.variantId).finally(() => { this.rearm() })
-      }, msUntilNextCheckIn(target.minuteOfDay(), this.now()))
+      }, delay)
       timer.unref?.()
       this.timers.set(target.variantId, timer)
     }
+  }
+
+  /** When this variant's timer is next due, epoch ms; absent before first arm. */
+  nextRunAt(variantId: string): number | undefined {
+    return this.nextRuns.get(variantId)
   }
 
   async sweepAll(isCatchUp: boolean, only?: string): Promise<void> {
@@ -275,44 +294,62 @@ export class CheckInScheduler {
     for (const target of this.targets) {
       if (only !== undefined && target.variantId !== only) continue
       if (!this.isEnabled(target.variantId)) continue
-
-      const record = this.store.read(target.variantId)
-      // Only an actually claimed day is settled. A day whose attempt ended in
-      // "no campaign" (the upstream had not released it yet) or in an error
-      // must stay retryable, otherwise one early failure burns the whole day —
-      // which is exactly what a wrong client identifier used to do.
-      const settledToday = record?.lastDate === today
-        && (record.status === 'claimed' || record.status === 'already-claimed')
-      if (settledToday) continue
-      // A catch-up run only makes sense once this variant's configured moment
-      // has passed; before it, the variant's own timer still owns today.
-      if (isCatchUp && !isPastCheckInTime(target.minuteOfDay(), nowMs)) continue
-
-      let result: QoderCheckInResult
+      // One variant is never swept twice at once. `start()` and the settings
+      // section's first catch-up are both in the air during assembly, and
+      // without this latch both claimed — the live log caught two rows five
+      // milliseconds apart for a single action.
+      if (this.inFlight.has(target.variantId)) continue
+      this.inFlight.add(target.variantId)
       try {
-        result = await target.checkIn()
-      } catch {
-        // A transport-level throw (no credential at all, a rejection) is not a
-        // settled day: leave the record alone so a later sweep can retry.
-        continue
+        await this.sweepOne(target, isCatchUp, nowMs, today)
+      } finally {
+        this.inFlight.delete(target.variantId)
       }
-      try {
-        if (result.status !== 'error') {
-          this.store.write(target.variantId, {
-            lastDate: result.date,
-            lastAt: result.timestamp,
-            status: result.status,
-            amount: result.amount,
-            message: result.message,
-          })
-          if (result.status === 'claimed') {
-            target.onClaimed?.()
-          }
+    }
+  }
+
+  private async sweepOne(
+    target: VariantCheckInTarget,
+    isCatchUp: boolean,
+    nowMs: number,
+    today: string,
+  ): Promise<void> {
+    const record = this.store.read(target.variantId)
+    // Only an actually claimed day is settled. A day whose attempt ended in
+    // "no campaign" (the upstream had not released it yet) or in an error
+    // must stay retryable, otherwise one early failure burns the whole day —
+    // which is exactly what a wrong client identifier used to do.
+    const settledToday = record?.lastDate === today
+      && (record.status === 'claimed' || record.status === 'already-claimed')
+    if (settledToday) return
+    // A catch-up run only makes sense once this variant's configured moment
+    // has passed; before it, the variant's own timer still owns today.
+    if (isCatchUp && !isPastCheckInTime(target.minuteOfDay(), nowMs)) return
+
+    let result: QoderCheckInResult
+    try {
+      result = await target.checkIn()
+    } catch {
+      // A transport-level throw (no credential at all, a rejection) is not a
+      // settled day: leave the record alone so a later sweep can retry.
+      return
+    }
+    try {
+      if (result.status !== 'error') {
+        this.store.write(target.variantId, {
+          lastDate: result.date,
+          lastAt: result.timestamp,
+          status: result.status,
+          amount: result.amount,
+          message: result.message,
+        })
+        if (result.status === 'claimed') {
+          target.onClaimed?.()
         }
-        this.onResult?.(result)
-      } catch {
-        // Ignored to protect loop
       }
+      this.onResult?.(result)
+    } catch {
+      // Ignored to protect loop
     }
   }
 }
