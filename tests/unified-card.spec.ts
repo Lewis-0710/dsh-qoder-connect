@@ -501,4 +501,47 @@ describe('Unified Qoder Plugin Card', () => {
     const clearBtn = view!.root.findAll(n => n.children.includes(en.checkInClear))
     expect(clearBtn.length).toBeGreaterThanOrEqual(1)
   })
+
+  it('stores a custom check-in time as minutes past midnight in UTC+8', async () => {
+    const mockSet = vi.fn()
+    const fakeScope = {
+      getSnapshot: () => ({
+        status: 'ready' as const,
+        writable: true,
+        value: {
+          sidebarQuotaCN: false,
+          sidebarQuotaGlobal: false,
+          autoCheckInCN: true,
+          autoCheckInGlobal: false,
+          checkInMinuteCN: 600,
+          checkInMinuteGlobal: 600,
+          quotaPollMs: 300_000,
+        },
+      }),
+      subscribe: () => () => {},
+      set: mockSet,
+    }
+    let renderer: ReactTestRenderer | undefined
+    await act(async () => {
+      renderer = create(createElement(QuotaSettingsContent, {
+        t: t as any,
+        scope: fakeScope as any,
+        signedIn: () => ({ cn: true, global: false }),
+      }))
+    })
+
+    const timeInputs = renderer!.root.findAll(n => n.props.type === 'time')
+    expect(timeInputs).toHaveLength(2)
+    // The stored minute count renders as the wall clock the picker speaks.
+    expect(timeInputs[0]!.props.value).toBe('10:00')
+
+    await act(async () => {
+      timeInputs[0]!.props.onChange({ target: { value: '14:30' } })
+    })
+    expect(mockSet).toHaveBeenCalledWith('checkInMinuteCN', 870)
+
+    // The Global row stays locked while its own account is signed out.
+    expect(timeInputs[1]!.props.disabled).toBe(true)
+    act(() => renderer?.unmount())
+  })
 })

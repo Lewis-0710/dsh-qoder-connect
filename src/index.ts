@@ -31,7 +31,7 @@ import { getMachineId } from './qoder/transport/machine-id.ts'
 import { qoderMachineIdPath } from './paths.ts'
 import { registerQoderStatusRoute } from './web-status.ts'
 import { createProbeKey, registerQoderProbeRoute } from './probe-route.ts'
-import { CheckInScheduler, JsonFileCheckInStore } from './checkin-scheduler.ts'
+import { CheckInScheduler, DEFAULT_CHECK_IN_MINUTE, JsonFileCheckInStore, normalizeCheckInMinute } from './checkin-scheduler.ts'
 import type { QoderModelInfo } from './catalog.ts'
 import type { QoderWebCatalog, QoderWebProbeSection } from './status-paths.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
@@ -253,6 +253,10 @@ export interface Config {
   autoCheckInCN?: boolean
   /** Automatically check in daily at 10:00 (UTC+8) to claim credits for Global variant. */
   autoCheckInGlobal?: boolean
+  /** When the China variant checks in, as minutes past midnight in UTC+8 (600 = 10:00). */
+  checkInMinuteCN?: number
+  /** When the Global variant checks in, as minutes past midnight in UTC+8 (600 = 10:00). */
+  checkInMinuteGlobal?: number
   /**
    * Sidebar quota refresh interval in milliseconds. One shared value (both
    * cards poll on it) because the two widgets hit the same rate-limited
@@ -282,7 +286,20 @@ const QUOTA_TOGGLE_FIELD = z.boolean().default(false)
   .description('Show this variant’s remaining-credit card in the sidebar footer (off by default)')
 /** Automatic check-in toggle. */
 const AUTO_CHECK_IN_FIELD = z.boolean().default(false)
-  .description('每天 10:00 (UTC+8) 自动签到领取算力额度（默认关闭）')
+  .description('每天自动签到领取算力额度（默认关闭）')
+/**
+ * When a variant checks in, as minutes past midnight in UTC+8.
+ *
+ * Stored as a plain minute count rather than a "HH:mm" string so the schema
+ * itself rejects an impossible time: a browser time input yields 0–1439, and
+ * anything outside that range fails Host validation instead of silently
+ * scheduling a request at a moment that never arrives.
+ */
+const CHECK_IN_MINUTE_FIELD = z.number()
+  .default(DEFAULT_CHECK_IN_MINUTE)
+  .min(0)
+  .max(1439)
+  .description('每日自动签到的时刻（自 UTC+8 午夜起的分钟数，600 = 10:00）')
 /**
  * Quota poll interval: default 5 minutes, floor 1 minute. The status route
  * performs a live upstream billing call per request with no cache, so an
@@ -307,6 +324,8 @@ export const Config: z<Config> = z.object({
   sidebarQuotaGlobal: QUOTA_TOGGLE_FIELD,
   autoCheckInCN: AUTO_CHECK_IN_FIELD,
   autoCheckInGlobal: AUTO_CHECK_IN_FIELD,
+  checkInMinuteCN: CHECK_IN_MINUTE_FIELD,
+  checkInMinuteGlobal: CHECK_IN_MINUTE_FIELD,
   quotaPollMs: QUOTA_POLL_FIELD,
 })
 
@@ -343,6 +362,8 @@ const QUOTA_SECTION: z<Config> = z.object({
   sidebarQuotaGlobal: QUOTA_TOGGLE_FIELD,
   autoCheckInCN: AUTO_CHECK_IN_FIELD,
   autoCheckInGlobal: AUTO_CHECK_IN_FIELD,
+  checkInMinuteCN: CHECK_IN_MINUTE_FIELD,
+  checkInMinuteGlobal: CHECK_IN_MINUTE_FIELD,
   quotaPollMs: QUOTA_POLL_FIELD,
 })
 
@@ -778,6 +799,16 @@ export function apply(ctx: Context, config: Config): void {
     targets: runtimes.map(runtime => ({
       variantId: runtime.variant.id,
       checkIn: (signal?: AbortSignal) => runtime.checkIn(signal),
+      minuteOfDay: () => {
+        const cfg = current()
+        const stored = runtime.variant.id === CHINA_VARIANT.id
+          ? cfg.checkInMinuteCN
+          : cfg.checkInMinuteGlobal
+        // A missing or out-of-range stored value must never leave a variant
+        // unscheduled, so it falls back to the documented default rather than
+        // to "now" or to an instant that never comes.
+        return normalizeCheckInMinute(stored ?? DEFAULT_CHECK_IN_MINUTE)
+      },
       onClaimed: () => {
         void runtime.client.fetchCredits().catch(() => undefined)
       },
@@ -1089,8 +1120,10 @@ export function apply(ctx: Context, config: Config): void {
       },
       onChange: () => {
         // Flipping a toggle on is a request to check in now rather than at the
-        // next 10:00. The sweep is idempotent: a day already claimed, or a
-        // variant whose toggle is off, is skipped before any request is made.
+        // configured moment, and editing the moment must move the timer
+        // without a restart. The sweep is idempotent: a day already claimed,
+        // or a variant whose toggle is off, is skipped before any request.
+        checkInScheduler.rearm()
         void checkInScheduler.sweepAll(true)
       },
     })

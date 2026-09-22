@@ -3,11 +3,12 @@ import { QoderCheckInService } from '../src/qoder/transport/checkin.ts'
 import type { QoderAuthService } from '../src/qoder/transport/auth.ts'
 import {
   CheckInScheduler,
+  DEFAULT_CHECK_IN_MINUTE,
+  isPastCheckInTime,
+  msUntilNextCheckIn,
+  normalizeCheckInMinute,
   type CheckInStatusStore,
   type CheckInRecord,
-  getUtc8DateString,
-  msUntilNext10amUtc8,
-  shouldCatchUp,
 } from '../src/checkin-scheduler.ts'
 import { QoderLlmError } from '../src/qoder/errors.ts'
 
@@ -189,33 +190,52 @@ describe('QoderCheckInService', () => {
 })
 
 describe('CheckInScheduler', () => {
-  it('calculates msUntilNext10amUtc8 correctly before and after 10:00', () => {
-    // 08:00 UTC+8 (00:00 UTC) -> 2 hours left
+  it('schedules the next occurrence of the configured moment in UTC+8', () => {
+    // 08:00 UTC+8 (00:00 UTC) -> 10:00 is 2 hours away
     const morningUtc8 = new Date('2026-09-21T00:00:00.000Z').getTime()
-    const diffMorning = msUntilNext10amUtc8(morningUtc8)
-    // Roughly 2 hours (7205000 ms +/- precision)
+    const diffMorning = msUntilNextCheckIn(DEFAULT_CHECK_IN_MINUTE, morningUtc8)
     expect(diffMorning).toBeGreaterThan(7_100_000)
     expect(diffMorning).toBeLessThan(7_300_000)
 
-    // 12:00 UTC+8 (04:00 UTC) -> next day 10:00:05 (roughly 22 hours left)
+    // 12:00 UTC+8 (04:00 UTC) -> tomorrow's 10:00, roughly 22 hours away
     const afternoonUtc8 = new Date('2026-09-21T04:00:00.000Z').getTime()
-    const diffAfternoon = msUntilNext10amUtc8(afternoonUtc8)
+    const diffAfternoon = msUntilNextCheckIn(DEFAULT_CHECK_IN_MINUTE, afternoonUtc8)
     expect(diffAfternoon).toBeGreaterThan(21 * 3600 * 1000)
     expect(diffAfternoon).toBeLessThan(23 * 3600 * 1000)
   })
 
-  it('evaluates shouldCatchUp: true only when past 10:00 and not checked in today', () => {
-    const today = '2026-09-21'
-    // Before 10:00 UTC+8 (01:00 UTC = 09:00 UTC+8)
+  it('honours a custom moment instead of the 10:00 default', () => {
+    // 08:00 UTC+8; a 14:30 (870) moment is 6.5 hours away, not 2.
+    const morningUtc8 = new Date('2026-09-21T00:00:00.000Z').getTime()
+    const diff = msUntilNextCheckIn(870, morningUtc8)
+    expect(diff).toBeGreaterThan(6.4 * 3600 * 1000)
+    expect(diff).toBeLessThan(6.6 * 3600 * 1000)
+  })
+
+  it('falls back to 10:00 for a stored value that is not a real minute', () => {
+    expect(normalizeCheckInMinute(undefined)).toBe(DEFAULT_CHECK_IN_MINUTE)
+    expect(normalizeCheckInMinute(Number.NaN)).toBe(DEFAULT_CHECK_IN_MINUTE)
+    expect(normalizeCheckInMinute(-1)).toBe(DEFAULT_CHECK_IN_MINUTE)
+    expect(normalizeCheckInMinute(1440)).toBe(DEFAULT_CHECK_IN_MINUTE)
+    // A real value passes through untouched.
+    expect(normalizeCheckInMinute(870)).toBe(870)
+    expect(normalizeCheckInMinute(0)).toBe(0)
+  })
+
+  it('reports the configured moment as passed only once it has actually passed', () => {
+    // 09:00 UTC+8 (01:00 UTC)
     const before10 = new Date('2026-09-21T01:00:00.000Z').getTime()
-    expect(shouldCatchUp(today, undefined, before10)).toBe(false)
+    expect(isPastCheckInTime(DEFAULT_CHECK_IN_MINUTE, before10)).toBe(false)
 
-    // After 10:00 UTC+8 (03:00 UTC = 11:00 UTC+8), no prior checkin
+    // 11:00 UTC+8 (03:00 UTC)
     const after10 = new Date('2026-09-21T03:00:00.000Z').getTime()
-    expect(shouldCatchUp(today, undefined, after10)).toBe(true)
+    expect(isPastCheckInTime(DEFAULT_CHECK_IN_MINUTE, after10)).toBe(true)
 
-    // After 10:00, but already checked in today
-    expect(shouldCatchUp(today, today, after10)).toBe(false)
+    // The same 11:00 wall clock has not reached a custom 14:30 (870) moment.
+    expect(isPastCheckInTime(870, after10)).toBe(false)
+    // ...and a midnight moment has already passed at 00:00 UTC+8 (16:00 UTC).
+    const midnightUtc8 = new Date('2026-09-21T16:00:00.000Z').getTime()
+    expect(isPastCheckInTime(0, midnightUtc8)).toBe(true)
   })
 
   it('runs catchup and updates store when enabled', async () => {
@@ -242,6 +262,7 @@ describe('CheckInScheduler', () => {
         {
           variantId: 'qoder',
           checkIn,
+          minuteOfDay: () => DEFAULT_CHECK_IN_MINUTE,
           onClaimed,
         },
       ],
@@ -282,6 +303,7 @@ describe('CheckInScheduler', () => {
       targets: [{
         variantId: 'qoder',
         checkIn,
+        minuteOfDay: () => DEFAULT_CHECK_IN_MINUTE,
       }],
       isEnabled: () => true,
       store,
@@ -319,6 +341,7 @@ describe('CheckInScheduler', () => {
       targets: [{
         variantId: 'qoder',
         checkIn,
+        minuteOfDay: () => DEFAULT_CHECK_IN_MINUTE,
       }],
       isEnabled: () => true,
       store,

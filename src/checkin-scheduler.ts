@@ -16,6 +16,14 @@ export interface VariantCheckInTarget {
    * sweep for the other.
    */
   checkIn: (signal?: AbortSignal) => Promise<QoderCheckInResult>
+  /**
+   * The moment this variant checks in, as minutes past midnight in UTC+8.
+   *
+   * A getter rather than a value: the user can retime it on the card, and the
+   * scheduler must observe the new value on its next pass without being
+   * rebuilt.
+   */
+  minuteOfDay: () => number
   onClaimed?: () => void
 }
 
@@ -121,18 +129,39 @@ export function getUtc8DateString(nowMs: number = Date.now()): string {
 }
 
 /**
- * Calculates milliseconds until the next 10:00:05 AM in UTC+8.
+ * The moment a variant checks in, as minutes past midnight in UTC+8.
+ *
+ * 600 is 10:00, which is when the upstream resets the daily campaign; it is
+ * also the default a variant falls back to when its setting is absent or
+ * malformed, so a bad stored value can never leave the day unscheduled.
  */
-export function msUntilNext10amUtc8(nowMs: number = Date.now()): number {
+export const DEFAULT_CHECK_IN_MINUTE = 600
+
+/** Clamp any stored/typed value onto a real minute of the day. */
+export function normalizeCheckInMinute(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_CHECK_IN_MINUTE
+  const whole = Math.trunc(value)
+  if (whole < 0 || whole > 1439) return DEFAULT_CHECK_IN_MINUTE
+  return whole
+}
+
+/**
+ * Calculates milliseconds until the next occurrence of `minuteOfDay` (UTC+8).
+ *
+ * Five seconds past the configured minute are used so the request lands after
+ * the upstream has flipped the day over rather than on the boundary itself.
+ */
+export function msUntilNextCheckIn(minuteOfDay: number, nowMs: number = Date.now()): number {
+  const minute = normalizeCheckInMinute(minuteOfDay)
   const d = new Date(nowMs)
-  // Calculate current UTC+8 hour/minute/second
+  // Calculate current UTC+8 wall clock
   const utc8Time = new Date(d.getTime() + (d.getTimezoneOffset() + 480) * 60_000)
   const targetUtc8 = new Date(utc8Time.getTime())
-  targetUtc8.setHours(10, 0, 5, 0)
+  targetUtc8.setHours(Math.floor(minute / 60), minute % 60, 5, 0)
 
   let diff = targetUtc8.getTime() - utc8Time.getTime()
   if (diff <= 0) {
-    // 10:00:05 today has passed, schedule for tomorrow
+    // Today's moment has passed, schedule for tomorrow
     targetUtc8.setDate(targetUtc8.getDate() + 1)
     diff = targetUtc8.getTime() - utc8Time.getTime()
   }
@@ -140,21 +169,13 @@ export function msUntilNext10amUtc8(nowMs: number = Date.now()): number {
 }
 
 /**
- * Whether today's daily reset hour (10:00 UTC+8) has already passed.
+ * Whether today's configured check-in moment (UTC+8) has already passed.
  */
-export function isPastDailyCheckInHour(nowMs: number = Date.now()): boolean {
+export function isPastCheckInTime(minuteOfDay: number, nowMs: number = Date.now()): boolean {
+  const minute = normalizeCheckInMinute(minuteOfDay)
   const d = new Date(nowMs)
   const utc8 = new Date(d.getTime() + (d.getTimezoneOffset() + 480) * 60_000)
-  return utc8.getHours() >= 10
-}
-
-/**
- * Checks whether catch-up is needed today:
- * Current time is past today's 10:00:00 AM (UTC+8) and today has not yet settled a check-in.
- */
-export function shouldCatchUp(today: string, lastDate?: string, nowMs: number = Date.now()): boolean {
-  if (lastDate === today) return false
-  return isPastDailyCheckInHour(nowMs)
+  return utc8.getHours() * 60 + utc8.getMinutes() >= minute
 }
 
 export interface CheckInSchedulerOptions {
@@ -171,7 +192,15 @@ export class CheckInScheduler {
   private readonly store: CheckInStatusStore
   private readonly onResult: ((result: QoderCheckInResult) => void) | undefined
   private readonly now: () => number
-  private timer: NodeJS.Timeout | undefined
+  /**
+   * One timer per enabled variant, keyed by variant id.
+   *
+   * Per-variant rather than one shared timer because the two products may be
+   * configured to different moments; a single timer would have to wake for the
+   * earliest and then decide who was due, which is the same bookkeeping with a
+   * worse failure mode.
+   */
+  private readonly timers = new Map<string, NodeJS.Timeout>()
   private disposed = false
 
   constructor(options: CheckInSchedulerOptions) {
@@ -186,7 +215,7 @@ export class CheckInScheduler {
     if (this.disposed) return
     // Immediate catch-up evaluation on startup
     void this.sweepAll(true)
-    this.armNextTimer()
+    this.rearm()
   }
 
   /**
@@ -205,28 +234,39 @@ export class CheckInScheduler {
 
   dispose(): void {
     this.disposed = true
-    if (this.timer) {
-      clearTimeout(this.timer)
-      this.timer = undefined
+    for (const timer of this.timers.values()) clearTimeout(timer)
+    this.timers.clear()
+  }
+
+  /**
+   * Re-place every variant's timer.
+   *
+   * Called after each fire and whenever the configured moment changes, so a
+   * user editing the time in the card does not have to restart DSH for it to
+   * take effect.
+   */
+  rearm(): void {
+    if (this.disposed) return
+    for (const timer of this.timers.values()) clearTimeout(timer)
+    this.timers.clear()
+    for (const target of this.targets) {
+      if (!this.isEnabled(target.variantId)) continue
+      const timer = setTimeout(() => {
+        this.timers.delete(target.variantId)
+        void this.sweepAll(false, target.variantId).finally(() => { this.rearm() })
+      }, msUntilNextCheckIn(target.minuteOfDay(), this.now()))
+      timer.unref?.()
+      this.timers.set(target.variantId, timer)
     }
   }
 
-  private armNextTimer(): void {
-    if (this.disposed) return
-    const delay = msUntilNext10amUtc8(this.now())
-    this.timer = setTimeout(() => {
-      void this.sweepAll(false)
-      this.armNextTimer()
-    }, delay)
-    this.timer.unref?.()
-  }
-
-  async sweepAll(isCatchUp: boolean): Promise<void> {
+  async sweepAll(isCatchUp: boolean, only?: string): Promise<void> {
     if (this.disposed) return
     const nowMs = this.now()
     const today = getUtc8DateString(nowMs)
 
     for (const target of this.targets) {
+      if (only !== undefined && target.variantId !== only) continue
       if (!this.isEnabled(target.variantId)) continue
 
       const record = this.store.read(target.variantId)
@@ -237,9 +277,9 @@ export class CheckInScheduler {
       const settledToday = record?.lastDate === today
         && (record.status === 'claimed' || record.status === 'already-claimed')
       if (settledToday) continue
-      // A catch-up run only makes sense once the daily reset hour has passed;
-      // before it, the scheduled timer still owns today's attempt.
-      if (isCatchUp && !isPastDailyCheckInHour(nowMs)) continue
+      // A catch-up run only makes sense once this variant's configured moment
+      // has passed; before it, the variant's own timer still owns today.
+      if (isCatchUp && !isPastCheckInTime(target.minuteOfDay(), nowMs)) continue
 
       let result: QoderCheckInResult
       try {

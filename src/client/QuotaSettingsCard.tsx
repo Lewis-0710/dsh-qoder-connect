@@ -42,6 +42,8 @@ export interface QuotaSection {
   sidebarQuotaGlobal?: boolean
   autoCheckInCN?: boolean
   autoCheckInGlobal?: boolean
+  checkInMinuteCN?: number
+  checkInMinuteGlobal?: number
   quotaPollMs?: number
 }
 
@@ -50,13 +52,40 @@ export type QuotaSettingsCardProps =
   & Partial<QuotaSettingsCardInjected>
 
 /** The settings fields this card edits, in display order. */
-const FIELDS = ['sidebarQuotaCN', 'sidebarQuotaGlobal', 'autoCheckInCN', 'autoCheckInGlobal', 'quotaPollMs'] as const
+const FIELDS = [
+  'sidebarQuotaCN',
+  'sidebarQuotaGlobal',
+  'autoCheckInCN',
+  'checkInMinuteCN',
+  'autoCheckInGlobal',
+  'checkInMinuteGlobal',
+  'quotaPollMs',
+] as const
 type Field = (typeof FIELDS)[number]
 
 /** The default poll interval shown before a value is stored. */
 const POLL_DEFAULT_MS = 300_000
 /** Floor the schema also enforces; mirrored here for immediate UI feedback. */
 const POLL_MIN_MS = 60_000
+/** 10:00 UTC+8, the moment the upstream resets the daily campaign. */
+const CHECK_IN_MINUTE_DEFAULT = 600
+
+/** Minutes past midnight (UTC+8) as the `HH:mm` a time input renders. */
+function minutesToTimeValue(minutes: number): string {
+  const safe = Number.isFinite(minutes) ? Math.trunc(minutes) : CHECK_IN_MINUTE_DEFAULT
+  const clamped = safe < 0 || safe > 1439 ? CHECK_IN_MINUTE_DEFAULT : safe
+  return `${String(Math.floor(clamped / 60)).padStart(2, '0')}:${String(clamped % 60).padStart(2, '0')}`
+}
+
+/** The `HH:mm` a time input yields back as minutes past midnight, or undefined. */
+function timeValueToMinutes(value: string): number | undefined {
+  const match = /^(\d{1,2}):(\d{2})$/u.exec(value)
+  if (match === null) return undefined
+  const hours = Number(match[1])
+  const minutes = Number(match[2])
+  if (hours > 23 || minutes > 59) return undefined
+  return hours * 60 + minutes
+}
 
 /** Projection the card component reads. */
 interface QuotaSettingsProjection {
@@ -67,6 +96,8 @@ interface QuotaSettingsProjection {
     sidebarQuotaGlobal: boolean
     autoCheckInCN: boolean
     autoCheckInGlobal: boolean
+    checkInMinuteCN: number
+    checkInMinuteGlobal: number
     quotaPollMs: number
   }
 }
@@ -82,6 +113,8 @@ function project(scope: SettingsScope<QuotaSection> | undefined): QuotaSettingsP
         sidebarQuotaGlobal: false,
         autoCheckInCN: false,
         autoCheckInGlobal: false,
+        checkInMinuteCN: CHECK_IN_MINUTE_DEFAULT,
+        checkInMinuteGlobal: CHECK_IN_MINUTE_DEFAULT,
         quotaPollMs: POLL_DEFAULT_MS,
       },
     }
@@ -123,6 +156,8 @@ const UNAVAILABLE: QuotaSettingsProjection = {
     sidebarQuotaGlobal: false,
     autoCheckInCN: false,
     autoCheckInGlobal: false,
+    checkInMinuteCN: CHECK_IN_MINUTE_DEFAULT,
+    checkInMinuteGlobal: CHECK_IN_MINUTE_DEFAULT,
     quotaPollMs: POLL_DEFAULT_MS,
   },
 }
@@ -139,6 +174,8 @@ function stableProject(scope: SettingsScope<QuotaSection> | undefined): QuotaSet
     cachedProjection.values.sidebarQuotaGlobal !== next.values.sidebarQuotaGlobal ||
     cachedProjection.values.autoCheckInCN !== next.values.autoCheckInCN ||
     cachedProjection.values.autoCheckInGlobal !== next.values.autoCheckInGlobal ||
+    cachedProjection.values.checkInMinuteCN !== next.values.checkInMinuteCN ||
+    cachedProjection.values.checkInMinuteGlobal !== next.values.checkInMinuteGlobal ||
     cachedProjection.values.quotaPollMs !== next.values.quotaPollMs
   ) {
     cachedScope = scope
@@ -182,6 +219,46 @@ function ToggleRow({ label, hint, checked, disabled, disabledHint, onToggle }: {
       >
         <span style={knobStyle} />
       </button>
+    </div>
+  )
+}
+
+/**
+ * One time row: the moment a variant checks in, as a native time picker.
+ *
+ * A `time` input rather than a number field because the value is a wall clock
+ * moment in UTC+8, and the browser's picker already speaks that vocabulary —
+ * the row stores the minute count the host schema validates.
+ */
+function TimeRow({ label, hint, value, disabled, onPick }: {
+  label: string
+  hint: string
+  value: number
+  disabled?: boolean
+  onPick: (minutes: number) => void
+}): React.ReactNode {
+  return (
+    <div style={rowStyle}>
+      <div style={rowTextStyle}>
+        <span style={labelStyle}>{label}</span>
+        <span style={hintStyle}>{hint}</span>
+      </div>
+      <span style={pollFieldStyle}>
+        <input
+          type="time"
+          value={minutesToTimeValue(value)}
+          disabled={disabled}
+          aria-label={label}
+          onChange={event => {
+            const minutes = timeValueToMinutes(event.target.value)
+            // An empty or half-typed value is not a time yet; leaving the
+            // stored one alone beats writing an arbitrary replacement.
+            if (minutes !== undefined) onPick(minutes)
+          }}
+          style={{ ...timeInputStyle, opacity: disabled === true ? 0.45 : 1 }}
+        />
+        <span style={hintStyle}>UTC+8</span>
+      </span>
     </div>
   )
 }
@@ -290,6 +367,13 @@ export function QuotaSettingsContent({ t = key => key, scope, signedIn }: QuotaS
         disabledHint={t('quotaSignInRequired')}
         onToggle={next => write('autoCheckInCN', next)}
       />
+      <TimeRow
+        label={t('checkInTimeCN')}
+        hint={t('checkInTimeHint')}
+        value={projection.values.checkInMinuteCN}
+        disabled={!signed.cn}
+        onPick={next => write('checkInMinuteCN', next)}
+      />
       <ToggleRow
         label={t('autoCheckInGlobal')}
         hint={t('autoCheckInHintGlobal')}
@@ -297,6 +381,13 @@ export function QuotaSettingsContent({ t = key => key, scope, signedIn }: QuotaS
         disabled={!signed.global}
         disabledHint={t('quotaSignInRequired')}
         onToggle={next => write('autoCheckInGlobal', next)}
+      />
+      <TimeRow
+        label={t('checkInTimeGlobal')}
+        hint={t('checkInTimeHint')}
+        value={projection.values.checkInMinuteGlobal}
+        disabled={!signed.global}
+        onPick={next => write('checkInMinuteGlobal', next)}
       />
       <div style={{ ...rowStyle, borderBottom: 'none', paddingBottom: 0 }}>
         <div style={rowTextStyle}>
@@ -477,6 +568,19 @@ const switchStyle: CSSProperties = {
 }
 const knobStyle: CSSProperties = { display: 'block', width: 16, height: 16, borderRadius: '50%', background: 'var(--dsw-alias-bg-layer-1, #fff)', boxShadow: '0 1px 2px rgba(0,0,0,0.2)' }
 const pollFieldStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, flex: 'none' }
+const timeInputStyle: CSSProperties = {
+  boxSizing: 'border-box',
+  width: 104,
+  padding: '5px 8px',
+  borderWidth: '1px',
+  borderStyle: 'solid',
+  borderColor: 'var(--dsw-alias-border-l2)',
+  borderRadius: 8,
+  background: 'var(--dsw-alias-bg-layer-2)',
+  color: 'var(--dsw-alias-label-primary)',
+  font: 'inherit',
+  fontSize: 13,
+}
 const inputStyle: CSSProperties = {
   boxSizing: 'border-box',
   width: 55,
