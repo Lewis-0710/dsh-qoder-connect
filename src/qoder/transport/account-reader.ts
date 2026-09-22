@@ -52,6 +52,8 @@ interface RawQuota {
 interface RawUsageInfo {
   userQuota?: RawQuota
   orgResourcePackage?: RawQuota
+  /** Bonus credits granted beside the plan (the daily campaign's 100). */
+  addOnQuota?: RawQuota
   totalUsagePercentage?: number
   isQuotaExceeded?: boolean
   expiresAt?: number | string
@@ -312,6 +314,7 @@ export class QoderUsageReader {
     return {
       userQuota: normalizeQuota(data.userQuota),
       orgResourcePackage: normalizeQuota(data.orgResourcePackage),
+      addOnQuota: normalizeQuota(data.addOnQuota),
       totalUsagePercentage: typeof data.totalUsagePercentage === 'number' ? data.totalUsagePercentage : undefined,
       isQuotaExceeded: typeof data.isQuotaExceeded === 'boolean' ? data.isQuotaExceeded : false,
       expiresAt: normalizeExpiresAt(data.expiresAt),

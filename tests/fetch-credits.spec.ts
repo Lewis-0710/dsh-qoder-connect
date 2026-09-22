@@ -94,6 +94,27 @@ describe('fetchCredits shapes', () => {
     expect(credits.cycleResetTime).toBe('')
   })
 
+  it('lists bonus credits as their own package beside the plan', async () => {
+    // Observed live: the account holds userQuota (300) and addOnQuota (100, the
+    // daily campaign's credits). Mapping only the first made the card list one
+    // package where the web listed two.
+    const credits = await clientFor(account({
+      userQuota: { total: 300, used: 0, remaining: 300, percentage: 0.01, unit: 'credits' },
+      addOnQuota: { total: 100, used: 0, remaining: 100, percentage: 0, unit: 'credits' },
+    })).fetchCredits()
+    expect(credits.accounts.map(entry => entry.packageName)).toEqual(['个人额度', '赠送额度'])
+    expect(credits.accounts[1]).toMatchObject({ remain: 100, size: 100 })
+    // The cycle total now counts every bucket the account holds.
+    expect(credits.totalSize).toBe(400)
+  })
+
+  it('omits the bonus package entirely when the upstream does not report one', async () => {
+    const credits = await clientFor(account({
+      userQuota: { total: 300, used: 0, remaining: 300, percentage: 0.01, unit: 'credits' },
+    })).fetchCredits()
+    expect(credits.accounts.map(entry => entry.packageName)).toEqual(['个人额度'])
+  })
+
   it('always asks the transport for a fresh read', async () => {
     const readAccount = vi.fn(async () => account(undefined))
     await clientFor(undefined, readAccount as never).fetchCredits()

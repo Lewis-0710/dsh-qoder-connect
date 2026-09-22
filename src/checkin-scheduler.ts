@@ -321,7 +321,22 @@ export class CheckInScheduler {
     // which is exactly what a wrong client identifier used to do.
     const settledToday = record?.lastDate === today
       && (record.status === 'claimed' || record.status === 'already-claimed')
-    if (settledToday) return
+    if (settledToday) {
+      // A scheduled run that finds the day already handled still leaves a row.
+      // The claim itself is correctly skipped (one benefit per day), but total
+      // silence is indistinguishable from a timer that never fired — which is
+      // exactly how a user concludes the scheduler is broken.
+      if (!isCatchUp) {
+        this.store.write(target.variantId, {
+          lastDate: today,
+          lastAt: nowMs,
+          status: 'already-claimed',
+          ...record.amount === undefined ? {} : { amount: record.amount },
+          message: 'Scheduled check-in ran; today was already claimed',
+        })
+      }
+      return
+    }
     // A catch-up run only makes sense once this variant's configured moment
     // has passed; before it, the variant's own timer still owns today.
     if (isCatchUp && !isPastCheckInTime(target.minuteOfDay(), nowMs)) return

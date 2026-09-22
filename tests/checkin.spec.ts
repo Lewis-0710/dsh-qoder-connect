@@ -457,6 +457,46 @@ describe('CheckInScheduler', () => {
     scheduler.dispose()
   })
 
+  it('records a visible row when the timer fires on an already-claimed day', async () => {
+    const records: Record<string, CheckInRecord> = {
+      qoder: { lastDate: '2026-09-22', lastAt: 1, status: 'claimed', amount: 100 },
+    }
+    const writes: CheckInRecord[] = []
+    const store: CheckInStatusStore = {
+      read: id => records[id],
+      write: (id, record) => { writes.push(record); records[id] = record },
+      clearLogs: () => {},
+    }
+    const checkIn = vi.fn(async () => ({
+      variantId: 'qoder',
+      date: '2026-09-22',
+      timestamp: 2,
+      status: 'claimed' as const,
+    }))
+    const scheduler = new CheckInScheduler({
+      targets: [{
+        variantId: 'qoder',
+        checkIn,
+        minuteOfDay: () => DEFAULT_CHECK_IN_MINUTE,
+      }],
+      isEnabled: () => true,
+      store,
+      now: () => new Date('2026-09-22T04:00:00.000Z').getTime(),
+    })
+
+    // The timer's own pass: no second claim, but the run is observable.
+    await scheduler.sweepAll(false, 'qoder')
+    expect(checkIn).not.toHaveBeenCalled()
+    expect(writes).toHaveLength(1)
+    expect(writes[0]?.status).toBe('already-claimed')
+
+    // A catch-up stays silent, or every boot would pile on another row.
+    writes.length = 0
+    await scheduler.sweepAll(true, 'qoder')
+    expect(writes).toHaveLength(0)
+    scheduler.dispose()
+  })
+
   it('accumulates and caps history logs up to 30 entries in JsonFileCheckInStore', () => {
     const records: Record<string, CheckInRecord> = {}
     const store: CheckInStatusStore = {

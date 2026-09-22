@@ -17,6 +17,14 @@ export interface QoderQuota {
 export interface QoderQuotaUsage {
   userQuota?: QoderQuota | undefined
   orgResourcePackage?: QoderQuota | undefined
+  /**
+   * Credits granted on top of the plan — the daily campaign's 100, for one.
+   *
+   * A separate bucket upstream reports beside `userQuota`; it carries its own
+   * total and remaining, so leaving it out made the card show fewer packages
+   * than the account actually holds (two on the web, one here).
+   */
+  addOnQuota?: QoderQuota | undefined
   totalUsagePercentage?: number | undefined
   isQuotaExceeded?: boolean | undefined
   expiresAt?: string | undefined

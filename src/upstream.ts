@@ -686,6 +686,18 @@ export class QoderUpstreamClient {
         ...usage.expiresAt === undefined ? {} : { packageEndTime: usage.expiresAt },
       })
     }
+    // Bonus credits sit beside the plan upstream (the daily campaign's 100 land
+    // here). Dropping the bucket made the card list fewer packages than the
+    // account actually holds — the web showed two, the card showed one.
+    const addOn = usage.addOnQuota
+    if (addOn !== undefined) {
+      accounts.push({
+        packageName: '赠送额度',
+        remain: addOn.remaining,
+        size: addOn.total,
+        ...usage.expiresAt === undefined ? {} : { packageEndTime: usage.expiresAt },
+      })
+    }
     const unlimited = usage.isQuotaExceeded === false && personal !== undefined && personal.total === 0
     return {
       total: usage.totalUsagePercentage ?? personal?.percentage ?? 0,
