@@ -1384,6 +1384,10 @@ interface Config {
   autoCheckInCN?: boolean;
   /** Automatically check in daily at 10:00 (UTC+8) to claim credits for Global variant. */
   autoCheckInGlobal?: boolean;
+  /** When the China variant checks in, as minutes past midnight in UTC+8 (600 = 10:00). */
+  checkInMinuteCN?: number;
+  /** When the Global variant checks in, as minutes past midnight in UTC+8 (600 = 10:00). */
+  checkInMinuteGlobal?: number;
   /**
    * Sidebar quota refresh interval in milliseconds. One shared value (both
    * cards poll on it) because the two widgets hit the same rate-limited

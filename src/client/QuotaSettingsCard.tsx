@@ -129,6 +129,8 @@ function project(scope: SettingsScope<QuotaSection> | undefined): QuotaSettingsP
       sidebarQuotaGlobal: value.sidebarQuotaGlobal === true,
       autoCheckInCN: value.autoCheckInCN === true,
       autoCheckInGlobal: value.autoCheckInGlobal === true,
+      checkInMinuteCN: typeof value.checkInMinuteCN === 'number' ? value.checkInMinuteCN : CHECK_IN_MINUTE_DEFAULT,
+      checkInMinuteGlobal: typeof value.checkInMinuteGlobal === 'number' ? value.checkInMinuteGlobal : CHECK_IN_MINUTE_DEFAULT,
       quotaPollMs: typeof value.quotaPollMs === 'number' ? value.quotaPollMs : POLL_DEFAULT_MS,
     },
   }
