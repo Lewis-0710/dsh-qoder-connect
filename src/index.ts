@@ -556,12 +556,31 @@ function createVariantRuntime(
   // The self-heal's auto-refresh record, surfaced on the card. Per variant:
   // each region's transport reports its own refreshes.
   let jobTokenRefreshedAt: number | undefined
+  // The attachment service may not exist when the client and transport are
+  // constructed (and a headless profile never has one), so both get a stable
+  // facade that resolves the real store per request.
+  const resolveAttachmentService = (): AttachmentStore => {
+    const service = ctx.get('attachments')
+    if (service === undefined) {
+      throw new Error('dsh-qoder-connect: no attachment service is available')
+    }
+    return service
+  }
+  const attachments: Pick<AttachmentStore, 'imageLimits' | 'readImageRequest' | 'saveImage'> = {
+    get imageLimits() {
+      return resolveAttachmentService().imageLimits
+    },
+    readImageRequest: async (attachment, policy, signal) =>
+      await resolveAttachmentService().readImageRequest(attachment, policy, signal),
+    saveImage: async request => await resolveAttachmentService().saveImage(request),
+  }
   const transport = createQoderTransport({
     region: variant.region,
     resolvePat: () => store.patPromise(),
     // Keep the machine-id seed inside the plugin's own data directory
     // (state/) instead of letting the transport write it near $HOME.
     resolveMachineId: () => getMachineId([qoderMachineIdPath()]),
+    attachments,
     onJobTokenRefreshed: info => {
       jobTokenRefreshedAt = info.at
       ctx.logger.warn(
@@ -580,18 +599,6 @@ function createVariantRuntime(
       emitJobTokenRefreshFailedHint(info.at, jobTokenRefreshFailedHintText(info.at))
     },
   })
-  // The attachment service may not exist when the client is constructed (and
-  // a headless profile never has one), so the client gets a stable proxy that
-  // resolves the real store per request.
-  const attachments: Pick<AttachmentStore, 'saveImage'> = {
-    saveImage: async request => {
-      const service = ctx.get('attachments')
-      if (service === undefined) {
-        throw new Error('dsh-qoder-connect: no attachment service is available to store images')
-      }
-      return await service.saveImage(request)
-    },
-  }
   const client = new QoderUpstreamClient({
     region: variant.region,
     providerId: variant.id,

@@ -477,4 +477,43 @@ describe('Qoder Host settings integration', () => {
     expect(Qoder.qoderProbePath(Qoder.CHINA_VARIANT.probeFilename))
       .toBe(join(root, 'state', '.qoder-probe.json'))
   })
+
+  it('supplies an attachment facade covering imageLimits, readImageRequest, and saveImage to transport and client', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-qoder-connect-attachments-'))
+    await mkdir(join(root, 'state'), { recursive: true })
+    await writeFile(join(root, 'state', 'auth-qoder.json'), credentialDocument(PAT_CN, 'china'))
+    stubEnvRoot()
+
+    const ctx = new Context()
+    context = ctx
+
+    const fakeAttachmentStore = {
+      imageLimits: {
+        maxImagePixels: 1000,
+        maxImageBytes: 2000,
+        maxImagesPerMessage: 5,
+        maxMessageImageBytes: 10000,
+      },
+      readImageRequest: vi.fn().mockResolvedValue({
+        data: new Uint8Array([1, 2, 3]),
+        mediaType: 'image/png',
+      }),
+      saveImage: vi.fn().mockResolvedValue({
+        id: 'test-attachment-id',
+        bytes: 3,
+        mediaType: 'image/png',
+      }),
+    }
+
+    ctx.provide('attachments')
+    ctx.set('attachments', fakeAttachmentStore as any)
+
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    await ctx.plugin(Qoder, {})
+
+    await vi.waitFor(() => {
+      expect(ctx.llm.listProviders().map(provider => provider.id)).toContain('qoder')
+    })
+  })
 })
