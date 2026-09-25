@@ -9,6 +9,16 @@ export type QoderVariantId = 'qoder' | 'qoder-global'
 export const QODER_STATUS_PATH = '/plugins/dsh-qoder-connect/status'
 
 /**
+ * Plugin-owned settings endpoint consumed by its browser half.
+ *
+ * GET answers the whole entry configuration as three layers (value/base/user)
+ * plus the write key; POST applies one patch. This is the plugin's own settings
+ * surface, replacing writes through the host's settings service — see
+ * {@link ./settings-store.ts} for why.
+ */
+export const QODER_SETTINGS_FACE_PATH = '/plugins/dsh-qoder-connect/settings'
+
+/**
  * Plugin-owned probe control endpoint.
  *
  * Separate from the status route because it accepts writes: the status route's

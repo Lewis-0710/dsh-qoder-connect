@@ -74,6 +74,18 @@ const NO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const
 const RATE_SEPARATOR = ' · '
 
 /**
+ * What the model seat shows in place of a rate the plugin cannot stand behind.
+ *
+ * The seat has no locale service (the adapter is a host seam), so this is a
+ * literal; it matches the settings card's own wording for the same state.
+ * Rendering it as WORDS rather than an empty slot: every other model in the
+ * seat shows `· x0.3`, so a bare name where the rate should be reads as a
+ * rendering bug. This plugin's fallback roster carries no rate at all, so the
+ * case is not hypothetical.
+ */
+const RATE_UNAVAILABLE = '价格暂不可用'
+
+/**
  * Append the billing rate to one model's display name.
  *
  * The rate rides the *name* alone: since DSH 0.1.2 the composer's model seat
@@ -90,6 +102,7 @@ const RATE_SEPARATOR = ' · '
 
 /** The catalog display suffix: the normalized billing rate, when the row has one. */
 function displaySuffix(info: QoderModelInfo): string | undefined {
+  if (info.billing?.rateUnknown === true) return RATE_UNAVAILABLE
   const rate = normalizeCredits(info.billing?.credits)
   return rate === undefined || rate === '' ? undefined : rate
 }

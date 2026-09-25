@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { CSSProperties, ReactElement } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import {
   QODER_AUTH_PATH,
@@ -23,7 +22,7 @@ import type {
 } from '../status-paths.ts'
 import { isQoderWebStatus } from './status-document.ts'
 import type { QoderSettingsKey } from './locales.ts'
-import { QuotaSettingsContent, type QuotaSection } from './QuotaSettingsCard.tsx'
+import { QuotaSettingsContent, type QuotaSection, type QuotaSettingsScope } from './QuotaSettingsCard.tsx'
 import {
   noteQuotaSignIn,
   noteQuotaStatus,
@@ -34,8 +33,8 @@ import {
 /** Localized copy injected by the browser-plugin registration. */
 export interface QoderPluginCardInjected {
   t: (key: QoderSettingsKey, params?: Record<string, unknown>) => string
-  /** The bound scope over the `qoder-quota` namespace, when available. */
-  scope?: SettingsScope<QuotaSection> | undefined
+  /** The bound quota settings face, when the host serves one. */
+  scope?: QuotaSettingsScope<QuotaSection> | undefined
   /** Sign-in state per variant; a toggle is disabled when its variant is out. */
   signedIn?: () => { cn: boolean; global: boolean }
   /**

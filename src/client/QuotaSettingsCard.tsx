@@ -2,9 +2,9 @@
  * The shared quota-settings card: one card above the two variant cards that
  * configures both sidebar quota widgets.
  *
- * Like the built-in plugin cards, it registers into `settings.plugin.item`
- * keyed by its own settings namespace (`qoder-quota`), binds that
- * namespace through the client settings scope, and writes through the scope's
+ * Like the built-in plugin cards, it registers into the Plugins tab's card
+ * list — `settings.plugin.item` on DSH 0.1.5, the shared 《插件设置》 block on
+ * 0.1.7, where that list is gone — and writes through the settings face's
  * revision-fenced `set` — the same durable-write path every preference row
  * uses. A toggle commits on click: each click is one explicit user choice,
  * and the scope's ordering makes the last one win, so no staged-draft form is
@@ -19,12 +19,62 @@
 import { useSyncExternalStore, useState, useEffect, useCallback } from 'react'
 import type { CSSProperties } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import type { QoderSettingsKey } from './locales.ts'
 import { isQoderWebStatus } from './status-document.ts'
 import { noteQuotaSignIn, onQuotaSettingsChange, quotaSignInState, quotaStatus, variantOfStatusPath } from './quota-settings-store.ts'
 import { QODER_GLOBAL_STATUS_PATH, QODER_STATUS_PATH } from '../status-paths.ts'
+
+/**
+ * The settings-controller face this bundle consumes, restated locally.
+ *
+ * DSH 0.1.5 hands a `SettingsScope<T>` (`SettingsScopeController`) to a plugin
+ * that binds a namespace it registered on the Host; DSH 0.1.7 hands a
+ * `ConfigFormController<T>` to a plugin that asks for its profile entry's form.
+ * The two are field-for-field identical — `getSnapshot` / `subscribe` / `set` /
+ * `unset` / `mutate`, over the same
+ * `status`/`value`/`base`/`user`/`revision`/`writable`/`mode` snapshot — which
+ * is what lets every caller below stay branch-free.
+ *
+ * The type is restated rather than imported: naming either host type would tie
+ * this bundle's compilation to one version's settings package graph, and 0.1.7
+ * does not declare the 0.1.5 name at all. A type-only import would still be a
+ * cross-version dependency; a structural restatement is not (client bundle
+ * purity: cross-plugin collaboration goes through services, never imports).
+ */
+export interface QuotaSettingsScope<T> {
+  /** @returns the current sync snapshot (stable reference until the next change). */
+  getSnapshot: () => QuotaSettingsSnapshot<T>
+  /**
+   * Observe snapshot replacements.
+   * @param listener - invoked after each snapshot change.
+   * @returns the disposer removing this listener.
+   */
+  subscribe: (listener: () => void) => () => void
+  /**
+   * Queue one field write.
+   * @param field - scalar field inside the section.
+   * @param value - JSON-shaped value selected by the user.
+   * @returns the host-specific settlement, which this card does not read.
+   */
+  set: (field: string, value: unknown) => Promise<unknown>
+  /**
+   * Queue one field clear, so the field re-inherits the composition layer.
+   * @param field - scalar field inside the section.
+   * @returns the host-specific settlement, which this card does not read.
+   */
+  unset: (field: string) => Promise<unknown>
+}
+
+/** One settings form's sync state, identical in both hosts. */
+export interface QuotaSettingsSnapshot<T> {
+  /** `loading` until the first accepted section, `ready` while one stands, `unavailable` when no such form is served. */
+  status: 'loading' | 'ready' | 'unavailable'
+  /** Last accepted section; undefined before the first acceptance. */
+  value: T | undefined
+  /** Whether the host document accepts writes. */
+  writable: boolean
+}
 
 /** Everything the registration binds into the card. */
 export interface QuotaSettingsCardInjected {
@@ -32,8 +82,8 @@ export interface QuotaSettingsCardInjected {
   t: (key: QoderSettingsKey, params?: Record<string, unknown>) => string
   /** Sign-in state per variant; a toggle is disabled when its variant is out. */
   signedIn?: (() => { cn: boolean; global: boolean }) | undefined
-  /** The bound scope over the `qoder-quota` namespace, when available. */
-  scope?: SettingsScope<QuotaSection> | undefined
+  /** The bound quota settings face, when the host serves one. */
+  scope?: QuotaSettingsScope<QuotaSection> | undefined
 }
 
 /** The section this card edits (mirrors the host-side QUOTA_SECTION). */
@@ -93,7 +143,7 @@ interface QuotaSettingsProjection {
 }
 
 /** Read the section values out of a scope snapshot (defaults when absent). */
-function project(scope: SettingsScope<QuotaSection> | undefined): QuotaSettingsProjection {
+function project(scope: QuotaSettingsScope<QuotaSection> | undefined): QuotaSettingsProjection {
   if (scope === undefined) {
     return {
       status: 'unavailable',
@@ -137,7 +187,7 @@ function project(scope: SettingsScope<QuotaSection> | undefined): QuotaSettingsP
  * projection until the underlying scope snapshot (or scope identity) changes,
  * which is the only thing the projection actually derives from.
  */
-let cachedScope: SettingsScope<QuotaSection> | undefined
+let cachedScope: QuotaSettingsScope<QuotaSection> | undefined
 let cachedSource: unknown
 let cachedProjection: QuotaSettingsProjection | undefined
 const UNAVAILABLE: QuotaSettingsProjection = {
@@ -154,7 +204,7 @@ const UNAVAILABLE: QuotaSettingsProjection = {
   },
 }
 
-function stableProject(scope: SettingsScope<QuotaSection> | undefined): QuotaSettingsProjection {
+function stableProject(scope: QuotaSettingsScope<QuotaSection> | undefined): QuotaSettingsProjection {
   if (scope === undefined) return UNAVAILABLE
   const next = project(scope)
   if (
