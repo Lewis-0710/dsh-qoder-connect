@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Qoder Connector",
+    "description": "Connect Qoder CLI's model service: per-region model toggles, context windows, quota lookup, and daily check-in."
+  }
+}
