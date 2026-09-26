@@ -1349,8 +1349,8 @@ declare function isHeartbeatProcessAlive(heartbeat: QoderHostHeartbeat): boolean
 //#region src/index.d.ts
 /** Stable Cordis plugin name. */
 declare const name = "llm-qoder";
-/** The model registry required before the provider can register. */
-declare const inject: string[];
+/** The model registry and settings services required by this plugin. */
+declare const inject: readonly ["llm", "settings"];
 /**
  * Settings namespace owning the China card's section.
  *

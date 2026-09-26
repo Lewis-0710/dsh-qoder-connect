@@ -142,8 +142,8 @@ export {
 /** Stable Cordis plugin name. */
 export const name = 'llm-qoder'
 
-/** The model registry required before the provider can register. */
-export const inject = ['llm']
+/** The model registry and settings services required by this plugin. */
+export const inject = ['llm', 'settings'] as const
 
 /**
  * Settings namespace owning the China card's section.
@@ -1751,15 +1751,25 @@ export function apply(ctx: Context, config: Config): void {
   // `configure({auto:false})` 保留：它只关掉宿主为这个 entry 自动生成的表单页
   // （本插件自带卡片），与持久化通路无关。
   ctx.inject(['settings'], settingsCtx => {
+    ctx.logger.info('[dsh-qoder-connect] settings service detected, registering namespaces...')
     /**
      * `auto: false` turns OFF the host's generated form page for this entry —
-     * the plugin ships its own card, which is now the only editor. It must be
-     * called as a METHOD: on 0.1.7 `configure` is a SettingsForms class method
-     * (it reads `this.presentations`), and extracting it as a free function
-     * throws a TypeError that used to kill the whole settings callback.
+     * the plugin ships its own card, which is now the only editor.
      */
     const settingsService = settingsCtx.settings as unknown as {
       configure?: (presentation: { auto: boolean }, owner?: unknown) => unknown
+      installSection?: (
+        owner: unknown,
+        ns: SettingsNamespace,
+        schema: unknown,
+        entry: unknown,
+        hooks: { setSource: (s: unknown) => void; onChange: () => void },
+      ) => void
+      register?: (
+        ns: SettingsNamespace,
+        schema: unknown,
+        options: { base?: unknown; applies?: string },
+      ) => unknown
     }
     if (typeof settingsService.configure === 'function') {
       try {
@@ -1771,6 +1781,34 @@ export function apply(ctx: Context, config: Config): void {
         console.error('[dsh-qoder-connect] settings.configure failed (own settings file still serves):', error)
       }
     }
+
+    const noopHooks = {
+      setSource() {},
+      onChange() {},
+    }
+    const registerNs = (ns: SettingsNamespace, schema: unknown) => {
+      if (typeof settingsService.installSection === 'function') {
+        try {
+          settingsService.installSection(ctx, ns, schema, config, noopHooks)
+          ctx.logger.info(`[dsh-qoder-connect] namespace "${ns}" registered via installSection`)
+          return
+        } catch (e) {
+          ctx.logger.warn(`[dsh-qoder-connect] installSection failed for "${ns}":`, e)
+        }
+      }
+      if (typeof settingsService.register === 'function') {
+        try {
+          settingsService.register(ns, schema, { base: config, applies: 'live' })
+          ctx.logger.info(`[dsh-qoder-connect] namespace "${ns}" registered via register`)
+        } catch (e) {
+          ctx.logger.warn(`[dsh-qoder-connect] register failed for "${ns}":`, e)
+        }
+      }
+    }
+
+    registerNs(QODER_SETTINGS_NS, CHINA_SECTION)
+    registerNs(QODER_GLOBAL_SETTINGS_NS, GLOBAL_SECTION)
+    registerNs(QODER_QUOTA_SETTINGS_NS, QUOTA_SECTION)
 
     /**
      * The four setters, now one implementation on both hosts: write the
